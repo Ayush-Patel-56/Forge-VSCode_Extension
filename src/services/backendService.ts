@@ -5,7 +5,7 @@ import * as vscode from 'vscode';
 const PORT = 7822;
 const BASE_URL = `http://localhost:${PORT}`;
 const HEALTH_POLL_INTERVAL_MS = 200;
-const HEALTH_TIMEOUT_MS = 12_000;
+const HEALTH_TIMEOUT_MS = 60_000;
 
 export class BackendService {
   private proc: cp.ChildProcess | undefined;
