@@ -4,3 +4,4 @@ __pycache__/
 *.vsix
 *.pyc
 .vscode-test/
+.superpowers/
