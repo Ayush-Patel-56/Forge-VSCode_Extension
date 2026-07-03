@@ -2,13 +2,15 @@
 import * as vscode from 'vscode';
 import { BackendService } from '../services/backendService';
 import { ContextService } from '../services/contextService';
+import { StatusBarService } from '../services/statusBarService';
 import { ChatPanel } from '../views/chatPanel';
 import { MCPPanel } from '../views/mcpPanel';
 
 export function registerCommands(
   ctx: vscode.ExtensionContext,
   backend: BackendService,
-  contextService: ContextService
+  contextService: ContextService,
+  statusBar: StatusBarService
 ) {
   const cmds: [string, (...args: unknown[]) => unknown][] = [
     ['forge.chat.open', () => ChatPanel.createOrShow(ctx, backend, contextService)],
@@ -52,6 +54,7 @@ export function registerCommands(
       );
       if (!picked) return;
       await backend.setModel(picked.detail);
+      statusBar.setReady(picked.detail);
     }],
   ];
 

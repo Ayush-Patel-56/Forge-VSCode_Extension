@@ -74,13 +74,23 @@ class ModelRouter:
             candidates = [c for c in candidates if self._is_free(c)]
         return candidates
 
+    def _get_candidates_with_default(self, task_type: str, model_id: str | None) -> list[str]:
+        # When the caller doesn't request a specific model, honor the configured
+        # default model (forge.set.model / _default_model) as the first candidate,
+        # then fall back to the task-profile chain (still respecting the free-only
+        # budget logic in _get_candidates for that fallback portion).
+        if model_id:
+            return self._get_candidates(task_type, model_id)
+        fallback = self._get_candidates(task_type, None)
+        return [self._default_model] + [m for m in fallback if m != self._default_model]
+
     async def stream(self, messages: list, model_id: str | None, context_chunks: list[str]):
         if context_chunks:
             ctx = '\n\n'.join(f'```\n{c}\n```' for c in context_chunks)
             messages = [{'role': 'system', 'content': f'Relevant code from codebase:\n{ctx}'}] + messages
 
         task_type = self._classify_task(messages[-1].get('content', '') if messages else '')
-        candidates = self._get_candidates(task_type, model_id)
+        candidates = self._get_candidates_with_default(task_type, model_id)
 
         for candidate in candidates:
             if candidate in self._rate_limited: continue

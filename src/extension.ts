@@ -48,7 +48,7 @@ export async function activate(ctx: vscode.ExtensionContext) {
   );
 
   // 4. Register all forge.* commands
-  registerCommands(ctx, backend, contextService);
+  registerCommands(ctx, backend, contextService, statusBar);
 }
 
 export function deactivate() {
