@@ -40,8 +40,10 @@ async def health():
 
 @app.post('/api/chat')
 async def chat(body: ChatRequest):
+    messages = [m.model_dump() for m in body.messages]
+
     async def generate():
-        async for chunk in model_router.stream(body.messages, body.model_id, body.context_chunks or []):
+        async for chunk in model_router.stream(messages, body.model_id, body.context_chunks or []):
             yield f'data: {chunk}\n\n'
         yield 'data: [DONE]\n\n'
     return StreamingResponse(generate(), media_type='text/event-stream')
