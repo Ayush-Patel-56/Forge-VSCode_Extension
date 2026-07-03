@@ -1,6 +1,7 @@
 // webpack.config.js
 'use strict';
 const path = require('path');
+const webpack = require('webpack');
 
 const extensionConfig = {
   target: 'node',
@@ -32,6 +33,9 @@ const chatWebviewConfig = {
       { test: /\.css$/, use: ['style-loader', 'css-loader', 'postcss-loader'] },
     ],
   },
+  plugins: [
+    new webpack.DefinePlugin({ 'process.env.NODE_ENV': JSON.stringify('production') }),
+  ],
   devtool: 'nosources-source-map',
 };
 
