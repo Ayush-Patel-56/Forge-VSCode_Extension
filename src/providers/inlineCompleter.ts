@@ -16,6 +16,10 @@ export class InlineCompleter implements vscode.InlineCompletionItemProvider {
     position: vscode.Position,
     _context: vscode.InlineCompletionContext
   ): Promise<vscode.InlineCompletionList> {
+    if (!vscode.workspace.getConfiguration('forge').get<boolean>('completions.enabled', true)) {
+      return { items: [] };
+    }
+
     if (this.debounceTimer) clearTimeout(this.debounceTimer);
 
     return new Promise((resolve) => {

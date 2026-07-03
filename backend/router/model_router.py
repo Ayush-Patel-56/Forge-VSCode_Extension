@@ -116,21 +116,49 @@ class ModelRouter:
         yield f'{{"content": "Error: all configured providers exhausted. Add an API key via forge.add.provider"}}'
 
     async def complete_fim(self, prefix: str, suffix: str, language: str) -> str | None:
+        # Groq/Gemini expose only the chat endpoint, so FIM runs as a strict
+        # insert-only chat prompt instead of the legacy completions API
         candidates = TASK_PROFILES['fim']
-        prompt = f'<PRE>{prefix}<SUF>{suffix}<MID>'  # Standard FIM format
+        system = (
+            'You are a code completion engine. Insert the code that belongs exactly '
+            'between the prefix and suffix. Output ONLY the inserted code: no '
+            'explanations, no markdown fences, and never repeat the prefix or suffix. '
+            'If nothing sensible fits, output nothing.'
+        )
+        user = (
+            f'Language: {language}\n'
+            f'<PREFIX>\n{prefix}\n</PREFIX>\n<SUFFIX>\n{suffix}\n</SUFFIX>'
+        )
         for candidate in candidates:
             if candidate in self._rate_limited: continue
             provider, model = candidate.split('/', 1)
             try:
                 client = self._get_client(provider)
-                resp = await client.completions.create(
-                    model=model, prompt=prompt, max_tokens=256, temperature=0.1,
-                    stop=['\n\n', '<EOT>']
+                resp = await client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {'role': 'system', 'content': system},
+                        {'role': 'user', 'content': user},
+                    ],
+                    max_tokens=256, temperature=0.1,
                 )
-                return resp.choices[0].text or None
+                text = (resp.choices[0].message.content or '').strip('\n')
+                text = self._strip_code_fences(text)
+                return text or None
             except Exception:
                 continue
         return None
+
+    @staticmethod
+    def _strip_code_fences(text: str) -> str:
+        stripped = text.strip()
+        if stripped.startswith('```'):
+            lines = stripped.split('\n')
+            lines = lines[1:]  # drop opening fence (possibly with language tag)
+            if lines and lines[-1].strip() == '```':
+                lines = lines[:-1]
+            return '\n'.join(lines)
+        return text
 
     def register_provider(self, provider_id: str, api_key: str):
         os.environ[f'FORGE_{provider_id.upper()}_KEY'] = api_key
