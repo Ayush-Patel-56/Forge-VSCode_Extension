@@ -110,7 +110,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     const parts = ['You are Forge, an expert AI coding assistant.'];
 
     if (snapshot.activeFile) {
-      parts.push(`\nActive file (${snapshot.language}):\n\`\`\`${snapshot.language}\n${snapshot.activeFile}\n\`\`\``);
+      parts.push(`\nActive file: ${snapshot.filePath ?? 'untitled'} (${snapshot.language})\n\`\`\`${snapshot.language}\n${snapshot.activeFile}\n\`\`\``);
     }
 
     if (snapshot.selection) {

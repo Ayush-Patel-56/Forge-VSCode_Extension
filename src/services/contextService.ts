@@ -4,6 +4,7 @@ import { BackendService } from './backendService';
 
 export interface ContextSnapshot {
   activeFile: string | null;
+  filePath: string | null;
   language: string | null;
   selection: string | null;
   ragChunks: { content: string; file: string; line: number }[];
@@ -11,16 +12,30 @@ export interface ContextSnapshot {
 }
 
 export class ContextService {
-  constructor(private backend: BackendService) {}
+  // Focusing a webview clears activeTextEditor, so remember the last real editor
+  private lastEditor: vscode.TextEditor | undefined = vscode.window.activeTextEditor;
+
+  constructor(private backend: BackendService) {
+    vscode.window.onDidChangeActiveTextEditor((e) => {
+      if (e) this.lastEditor = e;
+    });
+  }
+
+  private getEditor(): vscode.TextEditor | undefined {
+    const editor = vscode.window.activeTextEditor ?? this.lastEditor;
+    return editor && !editor.document.isClosed ? editor : undefined;
+  }
 
   async gatherContext(userQuery: string): Promise<ContextSnapshot> {
-    const editor = vscode.window.activeTextEditor;
+    const editor = this.getEditor();
     let activeFile: string | null = null;
+    let filePath: string | null = null;
     let language: string | null = null;
     let selection: string | null = null;
 
     if (editor) {
       activeFile = editor.document.getText();
+      filePath = editor.document.fileName;
       language = editor.document.languageId;
       const sel = editor.document.getText(editor.selection);
       if (sel.trim()) selection = sel;
@@ -40,6 +55,7 @@ export class ContextService {
 
     return {
       activeFile: activeFile ? activeFile.slice(0, 6000) : null, // cap at ~1500 tokens
+      filePath,
       language,
       selection,
       ragChunks,
@@ -48,6 +64,6 @@ export class ContextService {
   }
 
   getActiveFilePath(): string | null {
-    return vscode.window.activeTextEditor?.document.fileName ?? null;
+    return this.getEditor()?.document.fileName ?? null;
   }
 }
