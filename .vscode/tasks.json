@@ -4,7 +4,7 @@
     {
       "type": "npm",
       "script": "compile",
-      "problemMatcher": "$ts-webpack",
+      "problemMatcher": [],
       "group": {
         "kind": "build",
         "isDefault": true
