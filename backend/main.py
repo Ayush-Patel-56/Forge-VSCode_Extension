@@ -66,7 +66,7 @@ async def index_status():
 
 @app.get('/api/context/chunks')
 async def context_chunks(q: str, k: int = 8):
-    return context_engine.search(q, k)
+    return await asyncio.to_thread(context_engine.search, q, k)
 
 
 @app.post('/api/providers')

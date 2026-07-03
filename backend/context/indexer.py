@@ -25,6 +25,7 @@ class ContextEngine:
         self._observer = None
         self._status = {'status': 'idle', 'files_indexed': 0, 'total_files': 0}
         self._indexed_hashes: dict[str, str] = {}  # filepath -> content hash
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     async def start_watcher(self):
         pass  # observer started when workspace is indexed
@@ -34,8 +35,9 @@ class ContextEngine:
             self._observer.stop()
 
     async def index(self, workspace_path: str):
+        self._loop = asyncio.get_running_loop()
         self._status['status'] = 'indexing'
-        files = self._collect_files(workspace_path)
+        files = await asyncio.to_thread(self._collect_files, workspace_path)
         self._status['total_files'] = len(files)
         self._status['files_indexed'] = 0
 
@@ -62,6 +64,10 @@ class ContextEngine:
         return any(fnmatch.fnmatch(name, p) for p in IGNORE_PATTERNS)
 
     async def _index_file(self, filepath: str):
+        # Embedding is CPU-bound; keep it off the event loop so the API stays responsive
+        await asyncio.to_thread(self._index_file_sync, filepath)
+
+    def _index_file_sync(self, filepath: str):
         try:
             with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
@@ -148,5 +154,8 @@ class ForgeFileEventHandler(FileSystemEventHandler):
         self.engine = engine
 
     def on_modified(self, event):
-        if not event.is_directory:
-            asyncio.create_task(self.engine._index_file(event.src_path))
+        # Watchdog callbacks run on a non-asyncio thread; create_task would fail there
+        if not event.is_directory and self.engine._loop is not None:
+            asyncio.run_coroutine_threadsafe(
+                self.engine._index_file(event.src_path), self.engine._loop
+            )
