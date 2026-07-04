@@ -1,5 +1,5 @@
 # backend/context/indexer.py
-import asyncio, hashlib, os
+import asyncio, hashlib, json, os
 from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -15,6 +15,8 @@ CHUNK_LINES = 40
 CHUNK_OVERLAP = 10
 MAX_FILE_SIZE_KB = 500
 
+HASH_CACHE_PATH = Path.home() / '.forge' / 'index_hashes.json'
+
 chroma_client = chromadb.PersistentClient(path=str(Path.home() / '.forge' / 'chroma'))
 embedder = SentenceTransformer('nomic-ai/nomic-embed-text-v1.5', trust_remote_code=True)
 
@@ -24,8 +26,26 @@ class ContextEngine:
         self._collection = chroma_client.get_or_create_collection('forge_index')
         self._observer = None
         self._status = {'status': 'idle', 'files_indexed': 0, 'total_files': 0}
-        self._indexed_hashes: dict[str, str] = {}  # filepath -> content hash
+        # filepath -> content hash, persisted so restarts skip unchanged files
+        self._indexed_hashes: dict[str, str] = self._load_hash_cache()
+        if self._collection.count() == 0:
+            self._indexed_hashes = {}  # vector store was wiped; cache is stale
         self._loop: asyncio.AbstractEventLoop | None = None
+
+    @staticmethod
+    def _load_hash_cache() -> dict[str, str]:
+        try:
+            data = json.loads(HASH_CACHE_PATH.read_text(encoding='utf-8'))
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def _save_hash_cache(self):
+        try:
+            HASH_CACHE_PATH.parent.mkdir(exist_ok=True)
+            HASH_CACHE_PATH.write_text(json.dumps(self._indexed_hashes), encoding='utf-8')
+        except Exception:
+            pass  # cache is an optimization; never fail indexing over it
 
     async def start_watcher(self):
         pass  # observer started when workspace is indexed
@@ -46,6 +66,7 @@ class ContextEngine:
             self._status['files_indexed'] += 1
 
         self._status['status'] = 'ready'
+        self._save_hash_cache()
         self._start_file_watcher(workspace_path)
 
     def _collect_files(self, workspace_path: str) -> list[str]:
@@ -98,6 +119,8 @@ class ContextEngine:
             metadatas=[{'file': filepath, 'line': c['start_line']} for c in chunks],
         )
         self._indexed_hashes[filepath] = content_hash
+        if self._status['status'] != 'indexing':
+            self._save_hash_cache()  # watcher-triggered update; bulk index saves once at the end
 
     def _chunk_content(self, content: str, filepath: str) -> list[dict]:
         lines = content.split('\n')
