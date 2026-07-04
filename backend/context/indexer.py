@@ -9,11 +9,16 @@ from sentence_transformers import SentenceTransformer
 IGNORE_PATTERNS = [
     'node_modules', '.git', '__pycache__', '.venv', 'venv', 'dist', 'build',
     '.next', '.cache', '*.min.js', '*.min.css', '*.lock', '*.map',
-    '*.png', '*.jpg', '*.gif', '*.svg', '*.ico', '*.woff', '*.ttf'
+    '*.png', '*.jpg', '*.gif', '*.svg', '*.ico', '*.woff', '*.ttf',
+    'package-lock.json', 'pnpm-lock.yaml', '*.lockb'
 ]
 CHUNK_LINES = 40
 CHUNK_OVERLAP = 10
 MAX_FILE_SIZE_KB = 500
+# Dense/minified chunks max out the embedder's context and take minutes each
+# on CPU; anything past this length adds no retrieval value
+CHUNK_MAX_CHARS = 2000
+HASH_SAVE_EVERY_N_FILES = 25
 
 HASH_CACHE_PATH = Path.home() / '.forge' / 'index_hashes.json'
 
@@ -64,6 +69,8 @@ class ContextEngine:
         for filepath in files:
             await self._index_file(filepath)
             self._status['files_indexed'] += 1
+            if self._status['files_indexed'] % HASH_SAVE_EVERY_N_FILES == 0:
+                self._save_hash_cache()  # checkpoint so an interrupted pass still counts
 
         self._status['status'] = 'ready'
         self._save_hash_cache()
@@ -128,7 +135,7 @@ class ContextEngine:
         i = 0
         while i < len(lines):
             end = min(i + CHUNK_LINES, len(lines))
-            chunk_text = '\n'.join(lines[i:end])
+            chunk_text = '\n'.join(lines[i:end])[:CHUNK_MAX_CHARS]
             if chunk_text.strip():
                 chunks.append({'content': chunk_text, 'start_line': i + 1})
             i += CHUNK_LINES - CHUNK_OVERLAP
