@@ -45,6 +45,10 @@ export default function MCPApp() {
     vscode.postMessage({ type: 'INSTALL_MCP', mcpId: mcp.id, config });
   };
 
+  const doUninstall = (mcp: MCP) => {
+    vscode.postMessage({ type: 'UNINSTALL_MCP', mcpId: mcp.id });
+  };
+
   const statusColor = (status: string) => ({
     running: '#4caf50', installed: '#ff9800', not_installed: 'var(--vscode-descriptionForeground)'
   }[status] ?? 'gray');
@@ -69,6 +73,14 @@ export default function MCPApp() {
                   style={{ padding: '4px 10px', background: 'var(--vscode-button-background)', color: 'var(--vscode-button-foreground)', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12 }}
                 >
                   {installing === mcp.id ? 'Installing...' : 'Install'}
+                </button>
+              )}
+              {(mcp.status === 'running' || mcp.status === 'installed') && (
+                <button
+                  onClick={() => doUninstall(mcp)}
+                  style={{ padding: '4px 10px', background: 'var(--vscode-button-secondaryBackground)', color: 'var(--vscode-button-secondaryForeground)', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12 }}
+                >
+                  Uninstall
                 </button>
               )}
             </div>

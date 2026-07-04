@@ -197,6 +197,10 @@ export class BackendService {
     return res.json();
   }
 
+  async uninstallMCP(mcpId: string): Promise<void> {
+    await fetch(`${BASE_URL}/api/mcp/${mcpId}`, { method: 'DELETE' });
+  }
+
   async sendExplainRepo(workspacePath: string): Promise<void> {
     await fetch(`${BASE_URL}/api/explain-repo`, {
       method: 'POST',

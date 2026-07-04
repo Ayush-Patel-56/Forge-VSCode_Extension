@@ -6,6 +6,7 @@ import { StatusBarService } from './services/statusBarService';
 import { ChatPanel } from './views/chatPanel';
 import { MCPPanel } from './views/mcpPanel';
 import { SidebarProvider } from './views/sidebarProvider';
+import { MCPSidebarProvider } from './views/mcpSidebarProvider';
 import { InlineCompleter } from './providers/inlineCompleter';
 import { registerCommands } from './commands';
 
@@ -50,7 +51,15 @@ export async function activate(ctx: vscode.ExtensionContext) {
     )
   );
 
-  // 4. Register all forge.* commands
+  // 4. Register MCP sidebar webview provider
+  ctx.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(
+      'forge.mcpList',
+      new MCPSidebarProvider(ctx, backend)
+    )
+  );
+
+  // 5. Register all forge.* commands
   registerCommands(ctx, backend, contextService, statusBar);
 }
 

@@ -15,6 +15,10 @@ export type WebviewToExtension =
       config: Record<string, string>;
     }
   | {
+      type: 'UNINSTALL_MCP';
+      mcpId: string;
+    }
+  | {
       type: 'SET_MODEL';
       modelId: string;
     }

@@ -1,5 +1,5 @@
 # backend/mcp/manager.py
-import subprocess, json, asyncio, os
+import subprocess, json, asyncio, os, shutil
 from pathlib import Path
 from db import get_session
 from db.models import MCPServer
@@ -104,7 +104,10 @@ class MCPManager:
                 return {'status': 'error', 'error': f'Missing required config: {key}'}
 
         # Substitute variables into args
-        args = [a.format(**config) for a in spec['args']]
+        try:
+            args = [a.format(**config) for a in spec['args']]
+        except KeyError as exc:
+            return {'status': 'error', 'error': f'Missing required config: {exc.args[0]}'}
 
         # Write config to .forge/mcp.json in workspace
         workspace = config.get('WORKSPACE_PATH', '.')
@@ -127,9 +130,12 @@ class MCPManager:
 
         # Spawn the MCP server process
         env = {**os.environ, **{k: config[k] for k in spec['required_env_keys'] if k in config}}
+        executable = shutil.which(spec['command'])
+        if executable is None:
+            return {'status': 'error', 'error': f'{spec["command"]} not found. Install Node.js and npm.'}
         try:
             proc = subprocess.Popen(
-                [spec['command']] + args,
+                [executable] + args,
                 env=env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
