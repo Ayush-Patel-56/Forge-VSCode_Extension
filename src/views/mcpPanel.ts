@@ -47,8 +47,15 @@ export class MCPPanel {
   private async handleMessage(msg: WebviewToExtension) {
     switch (msg.type) {
       case 'REQUEST_MCP_LIST': {
-        const mcps = await this.backend.getMCPList();
-        this.post<ExtensionToWebview>({ type: 'MCP_LIST', mcps });
+        try {
+          const mcps = await this.backend.getMCPList();
+          this.post<ExtensionToWebview>({ type: 'MCP_LIST', mcps });
+        } catch {
+          this.post<ExtensionToWebview>({ type: 'MCP_LIST', mcps: [] });
+          vscode.window.showErrorMessage(
+            'Forge: backend is not responding — MCP list unavailable. Restart the window or check the Debug Console for [forge-backend] errors.'
+          );
+        }
         break;
       }
 
