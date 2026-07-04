@@ -18,6 +18,7 @@ export default function MCPApp() {
   const [installing, setInstalling] = useState<string | null>(null);
   const [wizardMcp, setWizardMcp] = useState<MCP | null>(null);
   const [keyValues, setKeyValues] = useState<Record<string, string>>({});
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     vscode.postMessage({ type: 'REQUEST_MCP_LIST' });
@@ -25,6 +26,10 @@ export default function MCPApp() {
       if (e.data.type === 'MCP_LIST') setMcps(e.data.mcps);
       if (e.data.type === 'MCP_STATUS') {
         if (e.data.status === 'ready' || e.data.status === 'error') setInstalling(null);
+        setErrors(prev => ({
+          ...prev,
+          [e.data.mcpId]: e.data.status === 'error' ? (e.data.error ?? 'Install failed') : '',
+        }));
         vscode.postMessage({ type: 'REQUEST_MCP_LIST' });
       }
     });
@@ -85,6 +90,11 @@ export default function MCPApp() {
               )}
             </div>
           </div>
+          {errors[mcp.id] && (
+            <div style={{ marginTop: 8, fontSize: 11, color: 'var(--vscode-errorForeground)' }}>
+              {errors[mcp.id]}
+            </div>
+          )}
         </div>
       ))}
 

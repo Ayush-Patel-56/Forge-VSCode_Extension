@@ -132,7 +132,7 @@ class MCPManager:
         env = {**os.environ, **{k: config[k] for k in spec['required_env_keys'] if k in config}}
         executable = shutil.which(spec['command'])
         if executable is None:
-            return {'status': 'error', 'error': f'{spec["command"]} not found. Install Node.js and npm.'}
+            return {'status': 'error', 'error': self._missing_command_error(spec['command'])}
         try:
             proc = subprocess.Popen(
                 [executable] + args,
@@ -141,7 +141,7 @@ class MCPManager:
                 stderr=subprocess.PIPE,
             )
         except FileNotFoundError:
-            return {'status': 'error', 'error': f'{spec["command"]} not found. Install Node.js and npm.'}
+            return {'status': 'error', 'error': self._missing_command_error(spec['command'])}
 
         self._processes[mcp_id] = proc
 
@@ -164,6 +164,12 @@ class MCPManager:
             db.commit()
 
         return {'status': 'ready'}
+
+    @staticmethod
+    def _missing_command_error(command: str) -> str:
+        if command == 'uvx':
+            return "uvx not found. Install uv first (pip install uv, or winget install astral-sh.uv), then retry."
+        return f'{command} not found. Install Node.js and npm, then retry.'
 
     async def uninstall(self, mcp_id: str):
         if mcp_id in self._processes:
