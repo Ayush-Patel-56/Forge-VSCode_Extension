@@ -23,6 +23,7 @@ export default function App() {
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [contextFiles, setContextFiles] = useState<string[]>([]);
+  const [ragChunkCount, setRagChunkCount] = useState(0);
   const [tokenCount, setTokenCount] = useState(0);
   const [costUsd, setCostUsd] = useState(0);
   const conversationId = useRef(crypto.randomUUID());
@@ -62,6 +63,7 @@ export default function App() {
         case 'CONTEXT_UPDATE':
           setContextFiles(msg.files);
           setTokenCount(msg.tokenCount);
+          setRagChunkCount(msg.ragChunkCount ?? 0);
           break;
         case 'USAGE_UPDATE':
           setTokenCount(msg.tokensUsed);
@@ -94,9 +96,10 @@ export default function App() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', fontFamily: 'var(--vscode-font-family)' }}>
       {/* Context badge */}
-      {contextFiles.length > 0 && (
+      {(contextFiles.length > 0 || ragChunkCount > 0) && (
         <div style={{ padding: '4px 12px', fontSize: 11, color: 'var(--vscode-descriptionForeground)', borderBottom: '1px solid var(--vscode-panel-border)' }}>
           {contextFiles.map(f => f.split('/').pop()).join(', ')} · ~{tokenCount.toLocaleString()} tokens
+          {ragChunkCount > 0 && ` · ${ragChunkCount} codebase chunks`}
           {costUsd > 0 && ` · $${costUsd.toFixed(4)} today`}
         </div>
       )}

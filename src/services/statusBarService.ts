@@ -16,6 +16,11 @@ export class StatusBarService {
     this.item.tooltip = 'Forge is initializing...';
   }
 
+  setIndexing(filesIndexed: number, totalFiles: number) {
+    this.item.text = `$(loading~spin) Forge indexing ${filesIndexed}/${totalFiles}`;
+    this.item.tooltip = `Forge is indexing the workspace for codebase search (${filesIndexed} of ${totalFiles} files)...`;
+  }
+
   setReady(modelId: string) {
     const shortModel = modelId.split('/').pop() ?? modelId;
     this.item.text = `$(sparkle) Forge | ${shortModel}`;

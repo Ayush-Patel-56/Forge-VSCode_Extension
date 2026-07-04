@@ -142,6 +142,18 @@ export class BackendService {
     });
   }
 
+  async getIndexStatus(): Promise<{ status: string; files_indexed: number; total_files: number }> {
+    try {
+      const res = await fetch(`${BASE_URL}/api/index/status`, {
+        signal: AbortSignal.timeout(2000),
+      });
+      if (!res.ok) throw new Error(`Index status API error: ${res.status}`);
+      return await res.json();
+    } catch {
+      return { status: 'unknown', files_indexed: 0, total_files: 0 };
+    }
+  }
+
   // --- Provider management -------------------------------------------------------
 
   async registerProvider(provider: string, apiKey: string): Promise<void> {

@@ -25,7 +25,10 @@ export async function activate(ctx: vscode.ExtensionContext) {
     statusBar.setReady(backend.getActiveModel());
     // Index workspace after backend is ready
     const wsPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    if (wsPath) backend.indexWorkspace(wsPath);
+    if (wsPath) {
+      backend.indexWorkspace(wsPath);
+      pollIndexStatus();
+    }
   }).catch((err) => {
     statusBar.setError();
     vscode.window.showErrorMessage(`Forge backend failed to start: ${err.message}`);
@@ -49,6 +52,45 @@ export async function activate(ctx: vscode.ExtensionContext) {
 
   // 4. Register all forge.* commands
   registerCommands(ctx, backend, contextService, statusBar);
+}
+
+const INDEX_POLL_INTERVAL_MS = 1000;
+const INDEX_POLL_HARD_CAP_MS = 10 * 60 * 1000;
+const INDEX_POLL_MAX_CONSECUTIVE_FAILURES = 5;
+
+function pollIndexStatus(): void {
+  const startedAt = Date.now();
+  let consecutiveFailures = 0;
+
+  const interval = setInterval(() => {
+    void (async () => {
+      const elapsed = Date.now() - startedAt;
+      if (elapsed >= INDEX_POLL_HARD_CAP_MS) {
+        clearInterval(interval);
+        statusBar.setReady(backend.getActiveModel());
+        return;
+      }
+
+      const result = await backend.getIndexStatus();
+
+      if (result.status === 'unknown') {
+        consecutiveFailures++;
+        if (consecutiveFailures >= INDEX_POLL_MAX_CONSECUTIVE_FAILURES) {
+          clearInterval(interval);
+          statusBar.setReady(backend.getActiveModel());
+        }
+        return;
+      }
+      consecutiveFailures = 0;
+
+      if (result.status === 'indexing') {
+        statusBar.setIndexing(result.files_indexed, result.total_files);
+      } else if (result.status === 'ready') {
+        clearInterval(interval);
+        statusBar.setReady(backend.getActiveModel());
+      }
+    })();
+  }, INDEX_POLL_INTERVAL_MS);
 }
 
 export function deactivate() {
