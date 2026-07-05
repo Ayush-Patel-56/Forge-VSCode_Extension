@@ -99,6 +99,11 @@ async def uninstall_mcp(mcp_id: str):
     return {'status': 'ok'}
 
 
+@app.post('/api/mcp/relaunch')
+async def relaunch_mcp(body: IndexRequest):
+    return await mcp_manager.relaunch_installed(body.workspace_path)
+
+
 @app.get('/api/usage')
 async def usage():
     return model_router.get_usage_stats()
@@ -109,9 +114,13 @@ async def patch_settings(body: SettingsPatch):
     with get_session() as db:
         if body.default_model:
             db.merge(Settings(key='default_model', value=body.default_model))
+        if body.daily_budget_usd is not None:
+            db.merge(Settings(key='daily_budget_usd', value=str(body.daily_budget_usd)))
         db.commit()
     if body.default_model:
         model_router.set_default_model(body.default_model)
+    if body.daily_budget_usd is not None:
+        model_router.set_daily_budget(body.daily_budget_usd)
     return {'status': 'ok'}
 
 

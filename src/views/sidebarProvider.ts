@@ -9,6 +9,7 @@
 import * as vscode from 'vscode';
 import { BackendService } from '../services/backendService';
 import { ContextService, ContextSnapshot } from '../services/contextService';
+import { StatusBarService } from '../services/statusBarService';
 import { WebviewToExtension, ExtensionToWebview } from '../types';
 import * as path from 'path';
 
@@ -19,7 +20,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   constructor(
     private ctx: vscode.ExtensionContext,
     private backend: BackendService,
-    private contextService: ContextService
+    private contextService: ContextService,
+    private statusBar?: StatusBarService
   ) {}
 
   resolveWebviewView(webviewView: vscode.WebviewView) {
@@ -80,6 +82,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         });
 
         const usage = await this.backend.getUsage();
+        this.statusBar?.updateUsage(usage.today_tokens, usage.today_usd);
         this.post<ExtensionToWebview>({
           type: 'USAGE_UPDATE',
           tokensUsed: usage.today_tokens,

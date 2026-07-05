@@ -1,5 +1,6 @@
 # backend/router/model_router.py
 import asyncio, json, os
+from datetime import datetime, timezone
 from openai import AsyncOpenAI
 from db import get_session
 from db.models import UsageLog, Settings
@@ -31,6 +32,8 @@ class ModelRouter:
         self._daily_budget_usd = 0.0  # 0 = unlimited
         self._today_cost_usd = 0.0
         self._today_tokens = 0
+        self._model_costs: dict[str, tuple[float, float]] = {}
+        self._model_costs_loaded = False
         self._load_settings()
 
     def _load_settings(self):
@@ -40,8 +43,29 @@ class ModelRouter:
                 if s: self._default_model = s.value
                 b = db.query(Settings).filter_by(key='daily_budget_usd').first()
                 if b: self._daily_budget_usd = float(b.value)
+
+                # Restore today's running totals so a backend restart doesn't zero the day.
+                today_midnight = datetime.now(timezone.utc).replace(
+                    hour=0, minute=0, second=0, microsecond=0
+                )
+                rows = db.query(UsageLog).filter(UsageLog.timestamp >= today_midnight).all()
+                self._today_tokens = sum((r.tokens_in or 0) + (r.tokens_out or 0) for r in rows)
+                self._today_cost_usd = sum((r.cost_usd or 0.0) for r in rows)
         except Exception:
             pass  # DB not initialized yet (first run) - keep defaults; init_db() runs at startup
+
+    def _get_model_costs(self, model_id: str) -> tuple[float, float]:
+        """Returns (cost_per_1k_input, cost_per_1k_output) for model_id, cached, default (0,0)."""
+        if not self._model_costs_loaded:
+            try:
+                from db.models import Model
+                with get_session() as db:
+                    for m in db.query(Model).all():
+                        self._model_costs[m.id] = (m.cost_per_1k_input or 0.0, m.cost_per_1k_output or 0.0)
+                self._model_costs_loaded = True
+            except Exception:
+                pass
+        return self._model_costs.get(model_id, (0.0, 0.0))
 
     def _get_client(self, provider: str) -> AsyncOpenAI:
         if provider not in self._clients:
@@ -92,6 +116,9 @@ class ModelRouter:
         task_type = self._classify_task(messages[-1].get('content', '') if messages else '')
         candidates = self._get_candidates_with_default(task_type, model_id)
 
+        total_chars = sum(len(m.get('content', '') or '') for m in messages)
+        tokens_in = total_chars // 4
+
         for candidate in candidates:
             if candidate in self._rate_limited: continue
 
@@ -108,9 +135,12 @@ class ModelRouter:
                         tokens_out += len(delta) // 4
                         yield f'{{"content": {json.dumps(delta)}}}'
 
-                # Log usage
-                self._today_tokens += tokens_out
-                self._log_usage(provider, candidate, 0, tokens_out, task_type)
+                # Log usage + cost accounting
+                cost_in, cost_out = self._get_model_costs(candidate)
+                cost = tokens_in / 1000 * cost_in + tokens_out / 1000 * cost_out
+                self._today_tokens += tokens_in + tokens_out
+                self._today_cost_usd += cost
+                self._log_usage(provider, candidate, tokens_in, tokens_out, task_type, cost)
                 return
 
             except Exception as e:
@@ -139,6 +169,8 @@ class ModelRouter:
             f'Language: {language}\n'
             f'<PREFIX>\n{prefix}\n</PREFIX>\n<SUFFIX>\n{suffix}\n</SUFFIX>'
         )
+        tokens_in = (len(system) + len(user)) // 4
+
         for candidate in candidates:
             if candidate in self._rate_limited: continue
             provider, model = candidate.split('/', 1)
@@ -154,6 +186,14 @@ class ModelRouter:
                 )
                 text = (resp.choices[0].message.content or '').strip('\n')
                 text = self._strip_code_fences(text)
+
+                tokens_out = len(text) // 4
+                cost_in, cost_out = self._get_model_costs(candidate)
+                cost = tokens_in / 1000 * cost_in + tokens_out / 1000 * cost_out
+                self._today_tokens += tokens_in + tokens_out
+                self._today_cost_usd += cost
+                self._log_usage(provider, candidate, tokens_in, tokens_out, 'complete', cost)
+
                 return text or None
             except Exception:
                 continue
@@ -178,6 +218,9 @@ class ModelRouter:
     def set_default_model(self, model_id: str):
         self._default_model = model_id
 
+    def set_daily_budget(self, value: float):
+        self._daily_budget_usd = value
+
     def get_default_model(self) -> str:
         return self._default_model
 
@@ -194,17 +237,36 @@ class ModelRouter:
             ]
 
     def get_usage_stats(self) -> dict:
+        by_model: dict[str, dict] = {}
+        try:
+            today_midnight = datetime.now(timezone.utc).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+            with get_session() as db:
+                rows = db.query(UsageLog).filter(UsageLog.timestamp >= today_midnight).all()
+            for r in rows:
+                entry = by_model.setdefault(r.model_id, {'model_id': r.model_id, 'tokens_in': 0, 'tokens_out': 0, 'cost_usd': 0.0})
+                entry['tokens_in'] += r.tokens_in or 0
+                entry['tokens_out'] += r.tokens_out or 0
+                entry['cost_usd'] += r.cost_usd or 0.0
+        except Exception:
+            pass
+
         return {
             'today_usd': round(self._today_cost_usd, 6),
             'today_tokens': self._today_tokens,
+            'by_model': [
+                {**v, 'cost_usd': round(v['cost_usd'], 6)}
+                for v in by_model.values()
+            ],
         }
 
-    def _log_usage(self, provider: str, model_id: str, tokens_in: int, tokens_out: int, task_type: str):
+    def _log_usage(self, provider: str, model_id: str, tokens_in: int, tokens_out: int, task_type: str, cost_usd: float = 0.0):
         with get_session() as db:
             db.add(UsageLog(
                 provider_id=provider, model_id=model_id,
                 tokens_in=tokens_in, tokens_out=tokens_out,
-                task_type=task_type
+                cost_usd=cost_usd, task_type=task_type
             ))
             db.commit()
 

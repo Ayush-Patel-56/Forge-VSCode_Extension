@@ -24,16 +24,32 @@ export async function activate(ctx: vscode.ExtensionContext) {
   // Fire-and-forget startup — UI shows immediately
   backend.start().then(() => {
     statusBar.setReady(backend.getActiveModel());
+
+    // Push the configured daily budget to the backend now that it's up.
+    const budget = vscode.workspace.getConfiguration('forge').get<number>('dailyBudgetUsd', 0);
+    void backend.setDailyBudget(budget);
+
     // Index workspace after backend is ready
     const wsPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     if (wsPath) {
       backend.indexWorkspace(wsPath);
+      void backend.relaunchMCPs(wsPath);
       pollIndexStatus();
     }
   }).catch((err) => {
     statusBar.setError();
     vscode.window.showErrorMessage(`Forge backend failed to start: ${err.message}`);
   });
+
+  // Re-push the daily budget whenever the user changes it in settings
+  ctx.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration('forge.dailyBudgetUsd')) {
+        const budget = vscode.workspace.getConfiguration('forge').get<number>('dailyBudgetUsd', 0);
+        void backend.setDailyBudget(budget);
+      }
+    })
+  );
 
   // 2. Register inline completion (ghost text)
   ctx.subscriptions.push(
@@ -47,7 +63,7 @@ export async function activate(ctx: vscode.ExtensionContext) {
   ctx.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
       'forge.chat',
-      new SidebarProvider(ctx, backend, contextService)
+      new SidebarProvider(ctx, backend, contextService, statusBar)
     )
   );
 

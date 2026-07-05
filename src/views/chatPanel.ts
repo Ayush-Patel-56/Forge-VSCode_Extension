@@ -2,6 +2,7 @@
 import * as vscode from 'vscode';
 import { BackendService } from '../services/backendService';
 import { ContextService, ContextSnapshot } from '../services/contextService';
+import { StatusBarService } from '../services/statusBarService';
 import { WebviewToExtension, ExtensionToWebview } from '../types';
 import * as path from 'path';
 
@@ -13,7 +14,8 @@ export class ChatPanel {
   static createOrShow(
     ctx: vscode.ExtensionContext,
     backend: BackendService,
-    context: ContextService
+    context: ContextService,
+    statusBar?: StatusBarService
   ) {
     const column = vscode.window.activeTextEditor?.viewColumn ?? vscode.ViewColumn.One;
     if (ChatPanel.currentPanel) {
@@ -25,14 +27,15 @@ export class ChatPanel {
       localResourceRoots: [vscode.Uri.file(path.join(ctx.extensionPath, 'out'))],
       retainContextWhenHidden: true, // keep React state alive when hidden
     });
-    ChatPanel.currentPanel = new ChatPanel(panel, ctx, backend, context);
+    ChatPanel.currentPanel = new ChatPanel(panel, ctx, backend, context, statusBar);
   }
 
   private constructor(
     panel: vscode.WebviewPanel,
     private ctx: vscode.ExtensionContext,
     private backend: BackendService,
-    private contextService: ContextService
+    private contextService: ContextService,
+    private statusBar?: StatusBarService
   ) {
     this.panel = panel;
     this.panel.webview.html = this.getHtml();
@@ -96,6 +99,7 @@ export class ChatPanel {
 
         // Update usage in status bar
         const usage = await this.backend.getUsage();
+        this.statusBar?.updateUsage(usage.today_tokens, usage.today_usd);
         this.post<ExtensionToWebview>({
           type: 'USAGE_UPDATE',
           tokensUsed: usage.today_tokens,

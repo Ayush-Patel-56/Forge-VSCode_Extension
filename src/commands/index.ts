@@ -13,7 +13,7 @@ export function registerCommands(
   statusBar: StatusBarService
 ) {
   const cmds: [string, (...args: unknown[]) => unknown][] = [
-    ['forge.chat.open', () => ChatPanel.createOrShow(ctx, backend, contextService)],
+    ['forge.chat.open', () => ChatPanel.createOrShow(ctx, backend, contextService, statusBar)],
     ['forge.mcp.open', () => MCPPanel.createOrShow(ctx, backend)],
     ['forge.index.workspace', async () => {
       const wsPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -26,7 +26,7 @@ export function registerCommands(
     ['forge.explain.repo', async () => {
       const wsPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
       if (!wsPath) return;
-      ChatPanel.createOrShow(ctx, backend, contextService);
+      ChatPanel.createOrShow(ctx, backend, contextService, statusBar);
       // Send special command to the panel
       await backend.sendExplainRepo(wsPath);
     }],

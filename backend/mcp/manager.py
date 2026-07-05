@@ -208,3 +208,71 @@ class MCPManager:
                 proc.terminate()
             except Exception:
                 pass
+
+    async def relaunch_installed(self, workspace_path: str) -> dict:
+        """Re-spawn MCP servers that were installed (is_installed=True in db) but
+        are not currently running (e.g. after a backend restart). Reads the
+        previously-persisted command/args/env from <workspace>/.forge/mcp.json.
+        """
+        relaunched: list[str] = []
+        failed: dict[str, str] = {}
+
+        config_path = Path(workspace_path) / '.forge' / 'mcp.json'
+        try:
+            entries: dict = json.loads(config_path.read_text())
+        except Exception:
+            entries = {}
+
+        for mcp_id, entry in entries.items():
+            proc = self._processes.get(mcp_id)
+            if proc is not None and proc.poll() is None:
+                continue  # already running
+
+            with get_session() as db:
+                server = db.query(MCPServer).filter_by(id=mcp_id).first()
+                installed = server is not None and server.is_installed
+
+            if not installed:
+                continue
+
+            command = entry.get('command')
+            args = entry.get('args', [])
+            env_overrides = entry.get('env', {})
+
+            if not command:
+                failed[mcp_id] = 'Missing command in .forge/mcp.json'
+                continue
+
+            executable = shutil.which(command)
+            if executable is None:
+                failed[mcp_id] = self._missing_command_error(command)
+                continue
+
+            env = {**os.environ, **env_overrides}
+            try:
+                new_proc = subprocess.Popen(
+                    [executable] + args,
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+            except Exception as exc:
+                failed[mcp_id] = str(exc)
+                continue
+
+            await asyncio.sleep(1.0)
+            if new_proc.poll() is not None:
+                stderr = new_proc.stderr.read().decode(errors='ignore')
+                failed[mcp_id] = stderr or 'Process exited immediately'
+                continue
+
+            self._processes[mcp_id] = new_proc
+            with get_session() as db:
+                server = db.query(MCPServer).filter_by(id=mcp_id).first()
+                if server:
+                    server.is_running = True
+                    db.commit()
+
+            relaunched.append(mcp_id)
+
+        return {'relaunched': relaunched, 'failed': failed}

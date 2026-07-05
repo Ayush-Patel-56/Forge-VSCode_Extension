@@ -178,9 +178,21 @@ export class BackendService {
     });
   }
 
-  async getUsage(): Promise<{ today_usd: number; today_tokens: number }> {
+  async getUsage(): Promise<{ today_usd: number; today_tokens: number; by_model?: { model_id: string; tokens_in: number; tokens_out: number; cost_usd: number }[] }> {
     const res = await fetch(`${BASE_URL}/api/usage`);
     return res.json();
+  }
+
+  async setDailyBudget(usd: number): Promise<void> {
+    try {
+      await fetch(`${BASE_URL}/api/settings`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ daily_budget_usd: usd }),
+      });
+    } catch {
+      // Backend may not be up yet; non-fatal
+    }
   }
 
   async getMCPList(): Promise<{ id: string; display_name: string; status: string }[]> {
@@ -199,6 +211,18 @@ export class BackendService {
 
   async uninstallMCP(mcpId: string): Promise<void> {
     await fetch(`${BASE_URL}/api/mcp/${mcpId}`, { method: 'DELETE' });
+  }
+
+  async relaunchMCPs(workspacePath: string): Promise<void> {
+    try {
+      await fetch(`${BASE_URL}/api/mcp/relaunch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspace_path: workspacePath }),
+      });
+    } catch {
+      // Non-fatal; MCPs simply stay unstarted
+    }
   }
 
   async sendExplainRepo(workspacePath: string): Promise<void> {

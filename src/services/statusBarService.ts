@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 
 export class StatusBarService {
   private item: vscode.StatusBarItem;
+  private currentModel: string | undefined;
 
   constructor(ctx: vscode.ExtensionContext) {
     this.item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
@@ -22,6 +23,7 @@ export class StatusBarService {
   }
 
   setReady(modelId: string) {
+    this.currentModel = modelId;
     const shortModel = modelId.split('/').pop() ?? modelId;
     this.item.text = `$(sparkle) Forge | ${shortModel}`;
     this.item.tooltip = `Active model: ${modelId}\nClick to open chat`;
@@ -33,8 +35,8 @@ export class StatusBarService {
   }
 
   updateUsage(tokens: number, costUsd: number) {
+    const shortModel = this.currentModel ? (this.currentModel.split('/').pop() ?? this.currentModel) : '';
     const costStr = costUsd > 0 ? ` | $${costUsd.toFixed(4)}` : '';
-    const modelPart = this.item.text.split('|')[1]?.trim() ?? '';
-    this.item.text = `$(sparkle) Forge | ${modelPart}${costStr} | ${tokens.toLocaleString()}t`;
+    this.item.text = `$(sparkle) Forge | ${shortModel}${costStr} | ${tokens.toLocaleString()}t`;
   }
 }
