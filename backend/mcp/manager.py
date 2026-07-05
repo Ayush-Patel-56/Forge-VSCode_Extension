@@ -129,27 +129,10 @@ class MCPManager:
         config_path.write_text(json.dumps(existing, indent=2))
 
         # Spawn the MCP server process
-        env = {**os.environ, **{k: config[k] for k in spec['required_env_keys'] if k in config}}
-        executable = shutil.which(spec['command'])
-        if executable is None:
-            return {'status': 'error', 'error': self._missing_command_error(spec['command'])}
-        try:
-            proc = subprocess.Popen(
-                [executable] + args,
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
-        except FileNotFoundError:
-            return {'status': 'error', 'error': self._missing_command_error(spec['command'])}
-
-        self._processes[mcp_id] = proc
-
-        # Health check: wait 1s, verify process is alive
-        await asyncio.sleep(1.0)
-        if proc.poll() is not None:
-            stderr = proc.stderr.read().decode(errors='ignore')
-            return {'status': 'error', 'error': stderr or 'Process exited immediately'}
+        env_overrides = {k: config[k] for k in spec['required_env_keys'] if k in config}
+        spawn_result = await self._spawn(mcp_id, spec['command'], args, env_overrides)
+        if spawn_result['status'] != 'ready':
+            return spawn_result
 
         # Update database
         with get_session() as db:
@@ -170,6 +153,39 @@ class MCPManager:
         if command == 'uvx':
             return "uvx not found. Install uv first (pip install uv, or winget install astral-sh.uv), then retry."
         return f'{command} not found. Install Node.js and npm, then retry.'
+
+    async def _spawn(self, mcp_id: str, command: str, args: list, env_overrides: dict) -> dict:
+        """Shared spawn logic used by install(), relaunch_installed(), and start().
+
+        Resolves `command` on PATH, launches it with `args`/`env_overrides`,
+        records the process in self._processes, and performs the ~1s
+        aliveness health check. Does NOT touch the database — callers own
+        that. Returns {'status': 'ready'} or {'status': 'error', 'error': ...}.
+        """
+        executable = shutil.which(command)
+        if executable is None:
+            return {'status': 'error', 'error': self._missing_command_error(command)}
+
+        env = {**os.environ, **env_overrides}
+        try:
+            proc = subprocess.Popen(
+                [executable] + args,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except Exception as exc:
+            return {'status': 'error', 'error': str(exc)}
+
+        self._processes[mcp_id] = proc
+
+        # Health check: wait 1s, verify process is alive
+        await asyncio.sleep(1.0)
+        if proc.poll() is not None:
+            stderr = proc.stderr.read().decode(errors='ignore')
+            return {'status': 'error', 'error': stderr or 'Process exited immediately'}
+
+        return {'status': 'ready'}
 
     async def uninstall(self, mcp_id: str):
         if mcp_id in self._processes:
@@ -243,30 +259,11 @@ class MCPManager:
                 failed[mcp_id] = 'Missing command in .forge/mcp.json'
                 continue
 
-            executable = shutil.which(command)
-            if executable is None:
-                failed[mcp_id] = self._missing_command_error(command)
+            spawn_result = await self._spawn(mcp_id, command, args, env_overrides)
+            if spawn_result['status'] != 'ready':
+                failed[mcp_id] = spawn_result['error']
                 continue
 
-            env = {**os.environ, **env_overrides}
-            try:
-                new_proc = subprocess.Popen(
-                    [executable] + args,
-                    env=env,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                )
-            except Exception as exc:
-                failed[mcp_id] = str(exc)
-                continue
-
-            await asyncio.sleep(1.0)
-            if new_proc.poll() is not None:
-                stderr = new_proc.stderr.read().decode(errors='ignore')
-                failed[mcp_id] = stderr or 'Process exited immediately'
-                continue
-
-            self._processes[mcp_id] = new_proc
             with get_session() as db:
                 server = db.query(MCPServer).filter_by(id=mcp_id).first()
                 if server:
@@ -276,3 +273,51 @@ class MCPManager:
             relaunched.append(mcp_id)
 
         return {'relaunched': relaunched, 'failed': failed}
+
+    async def start(self, mcp_id: str, workspace_path: str) -> dict:
+        """Re-spawn a single MCP server that is installed but not currently
+        running (e.g. the user stopped it, or it died after a backend
+        restart before relaunch_installed() got to it). Reads the
+        previously-persisted command/args/env from
+        <workspace>/.forge/mcp.json, the same source relaunch_installed()
+        uses.
+        """
+        proc = self._processes.get(mcp_id)
+        if proc is not None and proc.poll() is None:
+            return {'status': 'ready'}  # already running
+
+        with get_session() as db:
+            server = db.query(MCPServer).filter_by(id=mcp_id).first()
+            installed = server is not None and server.is_installed
+
+        if not installed:
+            return {'status': 'error', 'error': f'{mcp_id} is not installed'}
+
+        config_path = Path(workspace_path) / '.forge' / 'mcp.json'
+        try:
+            entries: dict = json.loads(config_path.read_text())
+        except Exception:
+            entries = {}
+
+        entry = entries.get(mcp_id)
+        if not entry:
+            return {'status': 'error', 'error': f'No saved configuration found for {mcp_id} in .forge/mcp.json'}
+
+        command = entry.get('command')
+        args = entry.get('args', [])
+        env_overrides = entry.get('env', {})
+
+        if not command:
+            return {'status': 'error', 'error': 'Missing command in .forge/mcp.json'}
+
+        spawn_result = await self._spawn(mcp_id, command, args, env_overrides)
+        if spawn_result['status'] != 'ready':
+            return spawn_result
+
+        with get_session() as db:
+            server = db.query(MCPServer).filter_by(id=mcp_id).first()
+            if server:
+                server.is_running = True
+                db.commit()
+
+        return {'status': 'ready'}

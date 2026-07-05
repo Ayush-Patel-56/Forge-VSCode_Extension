@@ -31,6 +31,11 @@ class MCPInstallRequest(BaseModel):
     config: dict[str, str] = {}
 
 
+class MCPStartRequest(BaseModel):
+    mcp_id: str
+    workspace_path: str
+
+
 class ProviderRequest(BaseModel):
     provider_id: str
     api_key: str

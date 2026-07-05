@@ -213,6 +213,15 @@ export class BackendService {
     await fetch(`${BASE_URL}/api/mcp/${mcpId}`, { method: 'DELETE' });
   }
 
+  async startMCP(mcpId: string, workspacePath: string): Promise<{ status: string; error?: string }> {
+    const res = await fetch(`${BASE_URL}/api/mcp/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mcp_id: mcpId, workspace_path: workspacePath }),
+    });
+    return res.json();
+  }
+
   async relaunchMCPs(workspacePath: string): Promise<void> {
     try {
       await fetch(`${BASE_URL}/api/mcp/relaunch`, {

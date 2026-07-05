@@ -55,6 +55,49 @@ async def run_test() -> bool:
         else:
             print("PASS: list_all() shows filesystem status 'running'")
 
+        # --- Step 2b: simulate a backend restart -- kill the process directly
+        # (not via uninstall()) so the db still says is_installed=True but
+        # nothing is running, then confirm start() can bring it back. --------
+        proc = manager._processes.get('filesystem')
+        if proc is None:
+            print("FAIL: expected manager._processes['filesystem'] to exist before simulated restart")
+            ok = False
+        else:
+            proc.terminate()
+            proc.wait(timeout=10)
+
+            listing_stopped = manager.list_all()
+            fs_entry_stopped = next((m for m in listing_stopped if m['id'] == 'filesystem'), None)
+            if fs_entry_stopped is None or fs_entry_stopped.get('status') != 'installed':
+                print(f"FAIL: expected list_all() to show filesystem status 'installed' after killing its process, got {fs_entry_stopped}")
+                ok = False
+            else:
+                print("PASS: list_all() shows filesystem status 'installed' after simulated backend restart")
+
+            start_result = await manager.start('filesystem', str(workspace))
+            if start_result.get('status') != 'ready':
+                print(f"FAIL: start('filesystem', ...) expected status 'ready', got {start_result}")
+                ok = False
+            else:
+                print("PASS: start('filesystem', workspace) returned status 'ready'")
+
+            listing_restarted = manager.list_all()
+            fs_entry_restarted = next((m for m in listing_restarted if m['id'] == 'filesystem'), None)
+            if fs_entry_restarted is None or fs_entry_restarted.get('status') != 'running':
+                print(f"FAIL: expected list_all() to show filesystem status 'running' after start(), got {fs_entry_restarted}")
+                ok = False
+            else:
+                print("PASS: list_all() shows filesystem status 'running' again after start()")
+
+        # --- Step 2c: start() on a never-installed id returns an error dict,
+        # not an exception. -------------------------------------------------
+        never_installed_result = await manager.start('memory', str(workspace))
+        if never_installed_result.get('status') != 'error':
+            print(f"FAIL: start('memory', ...) on a never-installed MCP expected status 'error', got {never_installed_result}")
+            ok = False
+        else:
+            print(f"PASS: start('memory', ...) on a never-installed MCP returned error status: {never_installed_result.get('error')}")
+
         # --- Step 3: uninstall stops the process --------------------------------
         proc = manager._processes.get('filesystem')
         if proc is None:

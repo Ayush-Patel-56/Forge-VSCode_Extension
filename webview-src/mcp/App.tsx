@@ -16,6 +16,7 @@ interface MCP {
 export default function MCPApp() {
   const [mcps, setMcps] = useState<MCP[]>([]);
   const [installing, setInstalling] = useState<string | null>(null);
+  const [starting, setStarting] = useState<string | null>(null);
   const [wizardMcp, setWizardMcp] = useState<MCP | null>(null);
   const [keyValues, setKeyValues] = useState<Record<string, string>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -25,7 +26,10 @@ export default function MCPApp() {
     window.addEventListener('message', (e) => {
       if (e.data.type === 'MCP_LIST') setMcps(e.data.mcps);
       if (e.data.type === 'MCP_STATUS') {
-        if (e.data.status === 'ready' || e.data.status === 'error') setInstalling(null);
+        if (e.data.status === 'ready' || e.data.status === 'error') {
+          setInstalling(null);
+          setStarting(null);
+        }
         setErrors(prev => ({
           ...prev,
           [e.data.mcpId]: e.data.status === 'error' ? (e.data.error ?? 'Install failed') : '',
@@ -54,6 +58,11 @@ export default function MCPApp() {
     vscode.postMessage({ type: 'UNINSTALL_MCP', mcpId: mcp.id });
   };
 
+  const doStart = (mcp: MCP) => {
+    setStarting(mcp.id);
+    vscode.postMessage({ type: 'START_MCP', mcpId: mcp.id });
+  };
+
   const statusColor = (status: string) => ({
     running: '#4caf50', installed: '#ff9800', not_installed: 'var(--vscode-descriptionForeground)'
   }[status] ?? 'gray');
@@ -78,6 +87,15 @@ export default function MCPApp() {
                   style={{ padding: '4px 10px', background: 'var(--vscode-button-background)', color: 'var(--vscode-button-foreground)', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12 }}
                 >
                   {installing === mcp.id ? 'Installing...' : 'Install'}
+                </button>
+              )}
+              {mcp.status === 'installed' && (
+                <button
+                  onClick={() => doStart(mcp)}
+                  disabled={starting === mcp.id}
+                  style={{ padding: '4px 10px', background: 'var(--vscode-button-background)', color: 'var(--vscode-button-foreground)', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12 }}
+                >
+                  {starting === mcp.id ? 'Starting...' : 'Start'}
                 </button>
               )}
               {(mcp.status === 'running' || mcp.status === 'installed') && (

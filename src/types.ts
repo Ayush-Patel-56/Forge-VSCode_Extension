@@ -19,6 +19,10 @@ export type WebviewToExtension =
       mcpId: string;
     }
   | {
+      type: 'START_MCP';
+      mcpId: string;
+    }
+  | {
       type: 'SET_MODEL';
       modelId: string;
     }

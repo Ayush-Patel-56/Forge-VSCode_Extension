@@ -89,6 +89,27 @@ export class MCPSidebarProvider implements vscode.WebviewViewProvider {
         this.post<ExtensionToWebview>({ type: 'MCP_LIST', mcps });
         break;
       }
+
+      case 'START_MCP': {
+        try {
+          const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
+          const result = await this.backend.startMCP(msg.mcpId, workspacePath);
+          this.post<ExtensionToWebview>({
+            type: 'MCP_STATUS',
+            mcpId: msg.mcpId,
+            status: result.status === 'ready' ? 'ready' : 'error',
+            error: result.error,
+          });
+        } catch (err: any) {
+          this.post<ExtensionToWebview>({
+            type: 'MCP_STATUS',
+            mcpId: msg.mcpId,
+            status: 'error',
+            error: err.message,
+          });
+        }
+        break;
+      }
     }
   }
 

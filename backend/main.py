@@ -12,7 +12,7 @@ from db import init_db, get_session
 from db.models import Settings
 from schemas import (
     ChatRequest, CompleteRequest, IndexRequest,
-    MCPInstallRequest, ProviderRequest, SettingsPatch
+    MCPInstallRequest, MCPStartRequest, ProviderRequest, SettingsPatch
 )
 
 model_router = ModelRouter()
@@ -85,6 +85,12 @@ async def list_models():
 @app.post('/api/mcp/install')
 async def install_mcp(body: MCPInstallRequest):
     result = await mcp_manager.install(body.mcp_id, body.config)
+    return result
+
+
+@app.post('/api/mcp/start')
+async def start_mcp(body: MCPStartRequest):
+    result = await mcp_manager.start(body.mcp_id, body.workspace_path)
     return result
 
 
