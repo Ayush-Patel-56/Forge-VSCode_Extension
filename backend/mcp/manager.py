@@ -1,8 +1,9 @@
 # backend/mcp/manager.py
-import subprocess, json, asyncio, os, shutil
+import subprocess, json, asyncio, os, shutil, sys
 from pathlib import Path
 from db import get_session
 from db.models import MCPServer
+from .client import MCPClient
 
 MCP_REGISTRY = {
     'filesystem': {
@@ -91,6 +92,7 @@ MCP_REGISTRY = {
 class MCPManager:
     def __init__(self):
         self._processes: dict[str, subprocess.Popen] = {}
+        self._clients: dict[str, MCPClient] = {}
 
     async def install(self, mcp_id: str, config: dict) -> dict:
         if mcp_id not in MCP_REGISTRY:
@@ -171,6 +173,7 @@ class MCPManager:
             proc = subprocess.Popen(
                 [executable] + args,
                 env=env,
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
@@ -185,12 +188,24 @@ class MCPManager:
             stderr = proc.stderr.read().decode(errors='ignore')
             return {'status': 'error', 'error': stderr or 'Process exited immediately'}
 
+        # Wire up the MCP JSON-RPC client (stdio) so the router can call this
+        # server's tools. Best-effort: an init failure must not fail the spawn
+        # itself -- the process keeps running, it just contributes no tools.
+        try:
+            client = MCPClient(proc)
+            await asyncio.to_thread(client.initialize)
+            await asyncio.to_thread(client.list_tools)  # warm the cache
+            self._clients[mcp_id] = client
+        except Exception as exc:
+            print(f'[mcp] {mcp_id}: MCP client init failed, no tools will be available: {exc}', file=sys.stderr)
+
         return {'status': 'ready'}
 
     async def uninstall(self, mcp_id: str):
         if mcp_id in self._processes:
             self._processes[mcp_id].terminate()
             del self._processes[mcp_id]
+        self._clients.pop(mcp_id, None)
         with get_session() as db:
             server = db.query(MCPServer).filter_by(id=mcp_id).first()
             if server:
@@ -224,6 +239,40 @@ class MCPManager:
                 proc.terminate()
             except Exception:
                 pass
+        self._clients.clear()
+
+    def get_all_tools(self) -> list:
+        """Aggregated list of tools across all currently-running MCP servers
+        that have an initialized client, in the shape the router expects:
+        [{'server', 'name', 'description', 'input_schema'}, ...].
+        Reads from each client's cached tools/list result -- no I/O here.
+        """
+        tools = []
+        for mcp_id, client in list(self._clients.items()):
+            proc = self._processes.get(mcp_id)
+            if proc is None or proc.poll() is not None:
+                # Process died without going through uninstall() - drop it.
+                self._clients.pop(mcp_id, None)
+                continue
+            try:
+                server_tools = client.list_tools()  # cached after warm-up in _spawn
+            except Exception:
+                continue
+            for t in server_tools:
+                tools.append({
+                    'server': mcp_id,
+                    'name': t.get('name'),
+                    'description': t.get('description', ''),
+                    'input_schema': t.get('inputSchema') or {'type': 'object', 'properties': {}},
+                })
+        return tools
+
+    async def call_tool(self, server: str, name: str, arguments: dict):
+        client = self._clients.get(server)
+        proc = self._processes.get(server)
+        if client is None or proc is None or proc.poll() is not None:
+            raise RuntimeError(f'MCP server "{server}" is not running or has no initialized tool client')
+        return await asyncio.to_thread(client.call_tool, name, arguments)
 
     async def relaunch_installed(self, workspace_path: str) -> dict:
         """Re-spawn MCP servers that were installed (is_installed=True in db) but

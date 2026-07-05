@@ -108,7 +108,7 @@ class ModelRouter:
         fallback = self._get_candidates(task_type, None)
         return [self._default_model] + [m for m in fallback if m != self._default_model]
 
-    async def stream(self, messages: list, model_id: str | None, context_chunks: list[str]):
+    async def stream(self, messages: list, model_id: str | None, context_chunks: list[str], tools_provider=None):
         if context_chunks:
             ctx = '\n\n'.join(f'```\n{c}\n```' for c in context_chunks)
             messages = [{'role': 'system', 'content': f'Relevant code from codebase:\n{ctx}'}] + messages
@@ -119,12 +119,39 @@ class ModelRouter:
         total_chars = sum(len(m.get('content', '') or '') for m in messages)
         tokens_in = total_chars // 4
 
+        openai_tools = None
+        tool_executor = None
+        if tools_provider is not None:
+            provided = tools_provider()
+            if provided:
+                openai_tools, tool_executor = provided
+
         for candidate in candidates:
             if candidate in self._rate_limited: continue
 
             provider, model = candidate.split('/', 1)
             try:
                 client = self._get_client(provider)
+
+                used_tool_loop = False
+                if openai_tools:
+                    try:
+                        async for out in self._run_tool_loop(
+                            client, model, messages, openai_tools, tool_executor,
+                            provider, candidate, task_type, tokens_in,
+                        ):
+                            yield out
+                        used_tool_loop = True
+                    except Exception:
+                        # Model/provider likely doesn't support tools, or the
+                        # tool loop otherwise blew up. Fall back to plain
+                        # streaming below for this SAME candidate -- chat must
+                        # never get worse than it was before tool support.
+                        used_tool_loop = False
+
+                if used_tool_loop:
+                    return
+
                 stream = await client.chat.completions.create(
                     model=model, messages=messages, stream=True, max_tokens=4096
                 )
@@ -154,6 +181,99 @@ class ModelRouter:
                     continue
 
         yield f'{{"content": "Error: all configured providers exhausted. Add an API key via forge.add.provider"}}'
+
+    async def _run_tool_loop(
+        self, client, model: str, messages: list, openai_tools: list, tool_executor,
+        provider: str, candidate: str, task_type: str, tokens_in: int,
+    ):
+        """Non-streaming tool-calling loop (max 5 round-trips). Yields the same
+        SSE-chunk JSON strings stream() yields: one progress chunk per tool
+        call, then a single final content chunk once the model responds
+        without further tool_calls. Logs usage/cost on success. Raises on any
+        failure so the caller can fall back to plain streaming.
+        """
+        loop_messages = list(messages)
+        tokens_out_total = 0
+
+        for _ in range(5):
+            response = await client.chat.completions.create(
+                model=model, messages=loop_messages, tools=openai_tools, max_tokens=4096,
+            )
+            choice = response.choices[0]
+            msg = choice.message
+            tool_calls = getattr(msg, 'tool_calls', None)
+
+            usage = getattr(response, 'usage', None)
+            completion_tokens = getattr(usage, 'completion_tokens', None) if usage else None
+            if completion_tokens is not None:
+                tokens_out_total += completion_tokens
+            else:
+                tokens_out_total += len(msg.content or '') // 4
+
+            if not tool_calls:
+                content = msg.content or ''
+                if content:
+                    yield f'{{"content": {json.dumps(content)}}}'
+
+                cost_in, cost_out = self._get_model_costs(candidate)
+                cost = tokens_in / 1000 * cost_in + tokens_out_total / 1000 * cost_out
+                self._today_tokens += tokens_in + tokens_out_total
+                self._today_cost_usd += cost
+                self._log_usage(provider, candidate, tokens_in, tokens_out_total, task_type, cost)
+                return
+
+            loop_messages.append({
+                'role': 'assistant',
+                'content': msg.content or '',
+                'tool_calls': [
+                    {
+                        'id': tc.id,
+                        'type': 'function',
+                        'function': {'name': tc.function.name, 'arguments': tc.function.arguments},
+                    }
+                    for tc in tool_calls
+                ],
+            })
+
+            for tc in tool_calls:
+                raw_name = tc.function.name
+                server, _, tool_name = raw_name.partition('__')
+                display = f'{server}.{tool_name}' if tool_name else raw_name
+                progress_text = '\n⚙ calling ' + display + '...\n'
+                yield f'{{"content": {json.dumps(progress_text)}}}'
+
+                try:
+                    args = json.loads(tc.function.arguments or '{}')
+                except Exception:
+                    args = {}
+
+                try:
+                    result = await tool_executor(raw_name, args)
+                except Exception as exc:
+                    result = {'error': str(exc)}
+
+                if isinstance(result, dict):
+                    content_str = result.get('text') or json.dumps(result)
+                elif isinstance(result, str):
+                    content_str = result
+                else:
+                    content_str = json.dumps(result)
+
+                loop_messages.append({
+                    'role': 'tool',
+                    'tool_call_id': tc.id,
+                    'content': content_str,
+                })
+
+        # Exceeded max iterations without a final answer. Report what we can
+        # and stop cleanly rather than raising (raising here would trigger a
+        # duplicate plain-streaming call for the same candidate).
+        cost_in, cost_out = self._get_model_costs(candidate)
+        cost = tokens_in / 1000 * cost_in + tokens_out_total / 1000 * cost_out
+        self._today_tokens += tokens_in + tokens_out_total
+        self._today_cost_usd += cost
+        self._log_usage(provider, candidate, tokens_in, tokens_out_total, task_type, cost)
+        yield f'{{"content": {json.dumps(chr(10) + "(stopped: tool loop exceeded max iterations)")}}}'
 
     async def complete_fim(self, prefix: str, suffix: str, language: str) -> str | None:
         # Groq/Gemini expose only the chat endpoint, so FIM runs as a strict

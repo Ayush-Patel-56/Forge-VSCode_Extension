@@ -1,5 +1,5 @@
 # backend/main.py
-import argparse, asyncio, os
+import argparse, asyncio, os, re
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
@@ -38,12 +38,53 @@ async def health():
     return {'status': 'ok', 'model': model_router.get_default_model()}
 
 
+def _sanitize_tool_name(name: str) -> str:
+    """OpenAI function names must match [a-zA-Z0-9_-]{1,64}."""
+    return re.sub(r'[^a-zA-Z0-9_-]', '_', name)[:64]
+
+
+def _mcp_tools_to_openai(tools: list) -> list:
+    openai_tools = []
+    for t in tools:
+        fn_name = _sanitize_tool_name(f"{t['server']}__{t['name']}")
+        openai_tools.append({
+            'type': 'function',
+            'function': {
+                'name': fn_name,
+                'description': t.get('description') or '',
+                'parameters': t.get('input_schema') or {'type': 'object', 'properties': {}},
+            },
+        })
+    return openai_tools
+
+
+def _mcp_tools_provider():
+    """Snapshot of currently-available MCP tools + an executor that routes a
+    sanitized `server__tool` function name back to mcp_manager.call_tool.
+    Returns None when no MCP servers are running -- stream() then behaves
+    exactly as it did before tool support existed.
+    """
+    tools = mcp_manager.get_all_tools()
+    if not tools:
+        return None
+
+    openai_tools = _mcp_tools_to_openai(tools)
+
+    async def executor(raw_name: str, arguments: dict):
+        server, _, tool_name = raw_name.partition('__')
+        return await mcp_manager.call_tool(server, tool_name, arguments)
+
+    return openai_tools, executor
+
+
 @app.post('/api/chat')
 async def chat(body: ChatRequest):
     messages = [m.model_dump() for m in body.messages]
 
     async def generate():
-        async for chunk in model_router.stream(messages, body.model_id, body.context_chunks or []):
+        async for chunk in model_router.stream(
+            messages, body.model_id, body.context_chunks or [], tools_provider=_mcp_tools_provider
+        ):
             yield f'data: {chunk}\n\n'
         yield 'data: [DONE]\n\n'
     return StreamingResponse(generate(), media_type='text/event-stream')
@@ -97,6 +138,11 @@ async def start_mcp(body: MCPStartRequest):
 @app.get('/api/mcp/list')
 async def list_mcp():
     return mcp_manager.list_all()
+
+
+@app.get('/api/mcp/tools')
+async def list_mcp_tools():
+    return mcp_manager.get_all_tools()
 
 
 @app.delete('/api/mcp/{mcp_id}')
