@@ -16,10 +16,15 @@ Notes:
     script is idempotent.
 """
 import asyncio
+import os
 import sys
 import tempfile
 import shutil
 from pathlib import Path
+
+# Isolate this test from the user's real ~/.forge/forge.db BEFORE importing db:
+# install/uninstall below would otherwise flip the user's is_installed flags.
+os.environ['FORGE_DB_PATH'] = str(Path(tempfile.mkdtemp(prefix='forge-test-db-')) / 'forge.db')
 
 # backend/ must be on sys.path so `from mcp.manager import MCPManager` resolves
 # the same way it does inside the backend package itself. Do NOT import main.py.

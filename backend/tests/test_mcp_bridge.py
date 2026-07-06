@@ -15,11 +15,16 @@ Run with:  python backend/tests/test_mcp_bridge.py
 """
 import asyncio
 import json
+import os
 import sys
 import tempfile
 import shutil
 from pathlib import Path
 from types import SimpleNamespace
+
+# Isolate this test from the user's real ~/.forge/forge.db BEFORE importing db:
+# install/uninstall below would otherwise flip the user's is_installed flags.
+os.environ['FORGE_DB_PATH'] = str(Path(tempfile.mkdtemp(prefix='forge-test-db-')) / 'forge.db')
 
 # backend/ must be on sys.path so `from mcp.manager import MCPManager` /
 # `from router.model_router import ModelRouter` resolve the same way they do

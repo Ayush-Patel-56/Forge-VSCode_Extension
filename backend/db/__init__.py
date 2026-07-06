@@ -1,11 +1,13 @@
 # backend/db/__init__.py
+import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from contextlib import contextmanager
 from pathlib import Path
 from .models import Base, Model, Provider, MCPServer
 
-DB_PATH = Path.home() / '.forge' / 'forge.db'
+# FORGE_DB_PATH override keeps tests off the user's real database
+DB_PATH = Path(os.environ.get('FORGE_DB_PATH') or (Path.home() / '.forge' / 'forge.db'))
 DB_PATH.parent.mkdir(exist_ok=True)
 engine = create_engine(f'sqlite:///{DB_PATH}', connect_args={'check_same_thread': False})
 SessionLocal = sessionmaker(bind=engine)

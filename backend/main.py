@@ -70,9 +70,25 @@ def _mcp_tools_provider():
 
     openai_tools = _mcp_tools_to_openai(tools)
 
+    # Exact sanitized-name map, plus a bare-name map because models sometimes
+    # drop the "server__" prefix when emitting tool calls
+    exact: dict = {}
+    by_bare_name: dict = {}
+    for t in tools:
+        exact[_sanitize_tool_name(f"{t['server']}__{t['name']}")] = (t['server'], t['name'])
+        by_bare_name.setdefault(t['name'], []).append((t['server'], t['name']))
+
     async def executor(raw_name: str, arguments: dict):
-        server, _, tool_name = raw_name.partition('__')
-        return await mcp_manager.call_tool(server, tool_name, arguments)
+        target = exact.get(raw_name)
+        if target is None:
+            bare = raw_name.partition('__')[2] or raw_name
+            candidates = by_bare_name.get(bare, [])
+            if len(candidates) == 1:
+                target = candidates[0]
+        if target is None:
+            server, _, tool_name = raw_name.partition('__')
+            target = (server, tool_name)
+        return await mcp_manager.call_tool(target[0], target[1], arguments)
 
     return openai_tools, executor
 
