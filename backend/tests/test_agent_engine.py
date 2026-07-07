@@ -95,6 +95,33 @@ def _make_response(content, tool_calls=None, usage=None) -> SimpleNamespace:
     )
 
 
+def _tc_delta(index: int, id=None, name=None, arguments=None) -> SimpleNamespace:
+    """One streamed tool_calls delta fragment (providers split name /
+    arguments across multiple chunks, keyed by index)."""
+    return SimpleNamespace(index=index, id=id, function=SimpleNamespace(name=name, arguments=arguments))
+
+
+def _chunk(content=None, tool_calls=None) -> SimpleNamespace:
+    """One streamed chat-completion chunk, shaped like the real OpenAI SDK."""
+    return SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=content, tool_calls=tool_calls))])
+
+
+class _FakeChunkStream:
+    """Async-iterable of pre-built chunk namespaces (mirrors a real
+    streaming chat-completion response)."""
+
+    def __init__(self, chunks):
+        self._chunks = list(chunks)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self._chunks:
+            raise StopAsyncIteration
+        return self._chunks.pop(0)
+
+
 async def run_router_typed_events_test() -> bool:
     ok = True
     router = ModelRouter()
@@ -124,9 +151,19 @@ async def run_router_typed_events_test() -> bool:
         if call_count['n'] == 1:
             if 'tools' not in kwargs or not kwargs['tools']:
                 raise AssertionError('expected tools to be passed on the first tool-loop call')
-            tool_call = _make_tool_call('call_1', 'fakeserver__faketool', json.dumps({'x': 1}))
-            return _make_response(None, tool_calls=[tool_call])
-        return _make_response('final answer from the model', tool_calls=None)
+            # Real providers split a tool call's name and arguments across
+            # multiple streamed chunks -- name in one, arguments fragmented
+            # across two more, all keyed by the same index.
+            return _FakeChunkStream([
+                _chunk(tool_calls=[_tc_delta(0, id='call_1', name='fakeserver__faketool')]),
+                _chunk(tool_calls=[_tc_delta(0, arguments='{"x":')]),
+                _chunk(tool_calls=[_tc_delta(0, arguments='1}')]),
+            ])
+        # Final round: plain content, streamed as multiple chunks.
+        return _FakeChunkStream([
+            _chunk(content='final answer '),
+            _chunk(content='from the model'),
+        ])
 
     fake_client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create)))
     router._get_client = lambda provider: fake_client  # type: ignore[method-assign]
@@ -163,12 +200,19 @@ async def run_router_typed_events_test() -> bool:
     else:
         print(f"PASS: router yielded a tool_result event: {tool_result_events[0]!r}")
 
-    final_content = [e['content'] for e in events if 'content' in e]
-    if 'final answer from the model' not in final_content:
-        print(f"FAIL: expected final content 'final answer from the model', got {final_content!r}")
+    final_content_chunks = [e['content'] for e in events if 'content' in e]
+    joined_final = ''.join(final_content_chunks)
+    if 'final answer from the model' not in joined_final:
+        print(f"FAIL: expected final content 'final answer from the model', got {final_content_chunks!r}")
         ok = False
     else:
         print("PASS: router yielded the model's final content after the tool call")
+
+    if len(final_content_chunks) < 2:
+        print(f"FAIL: expected the final round's content to stream as multiple chunks (not one blob), got {final_content_chunks!r}")
+        ok = False
+    else:
+        print(f"PASS: final round content streamed as multiple chunks: {final_content_chunks!r}")
 
     if any(mt != 8192 for mt in seen_max_tokens):
         print(f"FAIL: expected effort='high' to map every create() call to max_tokens=8192, got {seen_max_tokens!r}")
@@ -252,6 +296,103 @@ class _FakeStream:
             raise StopAsyncIteration
         content = self._contents.pop(0)
         return SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=content))])
+
+
+async def run_tool_loop_failure_fallback_test() -> bool:
+    """Reproduces the live bug: round 1 executes a tool, round 2 blows up
+    (e.g. provider rate-limited mid-turn). The tool loop must NOT leak
+    role:'tool' messages into the plain-streaming fallback (providers 400 on
+    those without accompanying tool-call context, which is what turned every
+    fallback into a failure and produced the "all providers exhausted"
+    error) -- and it must not silently drop the tool's already-executed
+    result either. Instead the fallback should get a compact system-message
+    summary of what already ran, and still produce a real answer."""
+    ok = True
+    router = ModelRouter()
+    router._log_usage = lambda *args, **kwargs: None  # type: ignore[method-assign]
+
+    fake_tool = {
+        'type': 'function',
+        'function': {
+            'name': 'fakeserver__faketool',
+            'description': 'a fake tool for testing',
+            'parameters': {'type': 'object', 'properties': {'x': {'type': 'number'}}},
+        },
+    }
+
+    async def fake_executor(raw_name: str, arguments: dict):
+        return {'text': 'tool result text from the executed call'}
+
+    def fake_tools_provider():
+        return [fake_tool], fake_executor
+
+    call_log = []
+
+    async def fake_create(**kwargs):
+        call_log.append(kwargs)
+        n = len(call_log)
+        if n == 1:
+            # Round 1: model calls the fake tool (streamed, split across chunks).
+            return _FakeChunkStream([
+                _chunk(tool_calls=[_tc_delta(0, id='call_1', name='fakeserver__faketool')]),
+                _chunk(tool_calls=[_tc_delta(0, arguments='{"x":')]),
+                _chunk(tool_calls=[_tc_delta(0, arguments='1}')]),
+            ])
+        if n == 2:
+            # Round 2: provider blows up after a tool already executed.
+            raise Exception('429 rate limit exceeded')
+        # Call 3: the plain-streaming fallback for this same candidate.
+        return _FakeStream(['final ', 'answer ', 'from fallback'])
+
+    fake_client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create)))
+    router._get_client = lambda provider: fake_client  # type: ignore[method-assign]
+
+    events = []
+    async for raw in router.stream(
+        messages=[{'role': 'user', 'content': 'please use the fake tool'}],
+        model_id=None,
+        context_chunks=[],
+        tools_provider=fake_tools_provider,
+    ):
+        events.append(json.loads(raw))
+
+    final_content = ''.join(e['content'] for e in events if 'content' in e)
+    if 'exhausted' in final_content.lower() or 'final answer from fallback' not in final_content:
+        print(f"FAIL: expected the fallback's final content, not the exhausted-providers error, got {final_content!r}")
+        ok = False
+    else:
+        print(f"PASS: stream produced the fallback's final content instead of the exhausted-providers error: {final_content!r}")
+
+    if len(call_log) != 3:
+        print(f"FAIL: expected exactly 3 create() calls (tool round, failing round, fallback), got {len(call_log)}: {call_log!r}")
+        ok = False
+    else:
+        fallback_messages = call_log[2].get('messages', [])
+        tool_msgs = [m for m in fallback_messages if m.get('role') == 'tool']
+        if tool_msgs:
+            print(f"FAIL: fallback messages must never contain role:'tool' entries, got {tool_msgs!r}")
+            ok = False
+        else:
+            print("PASS: fallback messages contain no role:'tool' entries")
+
+        summary_msgs = [
+            m for m in fallback_messages
+            if m.get('role') == 'system' and 'already executed' in (m.get('content') or '')
+        ]
+        if not summary_msgs or 'tool result text from the executed call' not in summary_msgs[0]['content']:
+            print(f"FAIL: expected a system message summarizing the executed tool's result, got {fallback_messages!r}")
+            ok = False
+        else:
+            print(f"PASS: fallback messages carry a system-message summary of the executed tool: {summary_msgs[0]!r}")
+
+        original_messages = [{'role': 'user', 'content': 'please use the fake tool'}]
+        if fallback_messages[:len(original_messages)] != original_messages:
+            print(f"FAIL: expected the fallback to still start with the original pristine messages, got {fallback_messages!r}")
+            ok = False
+        else:
+            print("PASS: fallback messages still start with the original pristine conversation")
+
+    return ok
 
 
 # ---------------------------------------------------------------------------
@@ -379,9 +520,12 @@ async def run_approval_flow_test() -> bool:
         async def fake_create(**kwargs):
             call_count['n'] += 1
             if call_count['n'] == 1:
-                tool_call = _make_tool_call('call_1', 'terminal__run_command', json.dumps({'command': 'echo hi-from-router'}))
-                return _make_response(None, tool_calls=[tool_call])
-            return _make_response('done', tool_calls=None)
+                return _FakeChunkStream([
+                    _chunk(tool_calls=[_tc_delta(0, id='call_1', name='terminal__run_command')]),
+                    _chunk(tool_calls=[_tc_delta(0, arguments='{"command": "echo ')]),
+                    _chunk(tool_calls=[_tc_delta(0, arguments='hi-from-router"}')]),
+                ])
+            return _FakeChunkStream([_chunk(content='done')])
 
         fake_client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create)))
         router._get_client = lambda provider: fake_client  # type: ignore[method-assign]
@@ -435,9 +579,10 @@ def main() -> int:
     ok_terminal = asyncio.run(run_terminal_tests())
     ok_router_events = asyncio.run(run_router_typed_events_test())
     ok_thinking_retry = asyncio.run(run_thinking_retry_test())
+    ok_tool_loop_fallback = asyncio.run(run_tool_loop_failure_fallback_test())
     ok_approval = asyncio.run(run_approval_flow_test())
 
-    ok = ok_terminal and ok_router_events and ok_thinking_retry and ok_approval
+    ok = ok_terminal and ok_router_events and ok_thinking_retry and ok_tool_loop_fallback and ok_approval
     if ok:
         print("PASS: all agent-engine assertions succeeded")
         return 0

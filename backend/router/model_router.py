@@ -143,6 +143,7 @@ class ModelRouter:
                 client = self._get_client(provider)
 
                 used_tool_loop = False
+                fallback_messages = messages
                 if openai_tools:
                     try:
                         async for out in self._run_tool_loop(
@@ -152,19 +153,33 @@ class ModelRouter:
                         ):
                             yield out
                         used_tool_loop = True
-                    except Exception:
+                    except Exception as e:
                         # Model/provider likely doesn't support tools, or the
                         # tool loop otherwise blew up. Fall back to plain
                         # streaming below for this SAME candidate -- chat must
-                        # never get worse than it was before tool support.
+                        # never get worse than it was before tool support. If
+                        # tool calls already executed this turn, don't just
+                        # silently drop their results: summarize them into a
+                        # system message so the fallback model can still
+                        # answer from what already ran. (Raw role:'tool'
+                        # messages are never carried into the fallback --
+                        # providers 400 on those without accompanying
+                        # tool-call context, which is what broke the
+                        # exhausted-providers case in the first place.)
                         used_tool_loop = False
+                        executed = getattr(e, 'forge_executed_tools', None)
+                        if executed:
+                            summary = 'Tool calls already executed this turn and their outputs:\n' + '\n'.join(
+                                f'{name}: {text[:500]}' for name, text in executed
+                            )
+                            fallback_messages = messages + [{'role': 'system', 'content': summary}]
 
                 if used_tool_loop:
                     return
 
                 yield json.dumps({'event': 'status', 'label': 'thinking'})
                 stream = await self._create_with_thinking(
-                    client, thinking, effort, model=model, messages=messages, stream=True,
+                    client, thinking, effort, model=model, messages=fallback_messages, stream=True,
                 )
                 tokens_out = 0
                 first_chunk = True
@@ -202,39 +217,77 @@ class ModelRouter:
         provider: str, candidate: str, task_type: str, tokens_in: int,
         thinking: bool = False, effort: str = 'medium', event_queue: asyncio.Queue | None = None,
     ):
-        """Non-streaming tool-calling loop (max 5 round-trips). Yields typed
-        SSE-chunk JSON strings: a status/thinking event per round, a
-        tool_call/tool_result event pair per tool invocation, and a single
-        final content chunk once the model responds without further
-        tool_calls. Logs usage/cost on success. Raises on any failure so the
-        caller can fall back to plain streaming.
+        """Streaming tool-calling loop (max 5 round-trips). Each round streams
+        the model's response live -- content deltas are yielded as SSE
+        content chunks the moment they arrive, instead of waiting for the
+        whole round to finish, so the user never stares at "thinking" while
+        a full generation happens invisibly. tool_calls deltas are
+        accumulated by index across the round's chunks (provider may split
+        name/arguments across several chunks) and only resolved into real
+        tool invocations once the round's stream ends.
+
+        Yields typed SSE-chunk JSON strings: a status/thinking event per
+        round, a status/responding event before the first content chunk of
+        a round, a tool_call/tool_result event pair per tool invocation, and
+        streamed content chunks once the model responds without further
+        tool_calls. Logs usage/cost on success.
+
+        Raises on any failure so the caller can fall back to plain
+        streaming. Operates on its own copy of `messages` (`loop_messages`)
+        so the caller's list is never mutated -- the fallback and any
+        subsequent candidate must see the pristine pre-tool-loop messages.
+        If at least one tool call already executed this turn before the
+        failure, the raised exception carries a `forge_executed_tools`
+        attribute (list of (display_name, result_text) tuples) so the
+        caller can summarize the completed work into the fallback instead
+        of silently dropping it.
         """
         loop_messages = list(messages)
         tokens_out_total = 0
         call_seq = 0
+        executed_tools_log: list[tuple[str, str]] = []
 
-        for _ in range(5):
+        for round_num in range(5):
             yield json.dumps({'event': 'status', 'label': 'thinking'})
-            response = await self._create_with_thinking(
-                client, thinking, effort, model=model, messages=loop_messages, tools=openai_tools,
-            )
-            choice = response.choices[0]
-            msg = choice.message
-            tool_calls = getattr(msg, 'tool_calls', None)
 
-            usage = getattr(response, 'usage', None)
-            completion_tokens = getattr(usage, 'completion_tokens', None) if usage else None
-            if completion_tokens is not None:
-                tokens_out_total += completion_tokens
-            else:
-                tokens_out_total += len(msg.content or '') // 4
+            try:
+                stream = await self._create_with_thinking(
+                    client, thinking, effort, model=model, messages=loop_messages,
+                    tools=openai_tools, stream=True,
+                )
 
-            if not tool_calls:
-                content = msg.content or ''
-                if content:
-                    yield json.dumps({'event': 'status', 'label': 'responding'})
-                    yield f'{{"content": {json.dumps(content)}}}'
+                round_content = ''
+                tool_calls_acc: dict[int, dict] = {}
+                responded = False
 
+                async for chunk in stream:
+                    delta = chunk.choices[0].delta
+                    content_piece = getattr(delta, 'content', None)
+                    if content_piece:
+                        if not responded:
+                            yield json.dumps({'event': 'status', 'label': 'responding'})
+                            responded = True
+                        round_content += content_piece
+                        tokens_out_total += len(content_piece) // 4
+                        yield f'{{"content": {json.dumps(content_piece)}}}'
+
+                    for tc_delta in (getattr(delta, 'tool_calls', None) or []):
+                        idx = getattr(tc_delta, 'index', 0) or 0
+                        entry = tool_calls_acc.setdefault(idx, {'id': None, 'name': None, 'arguments': ''})
+                        if getattr(tc_delta, 'id', None):
+                            entry['id'] = tc_delta.id
+                        func = getattr(tc_delta, 'function', None)
+                        if func is not None:
+                            if getattr(func, 'name', None):
+                                entry['name'] = func.name
+                            if getattr(func, 'arguments', None):
+                                entry['arguments'] += func.arguments
+            except Exception as e:
+                if executed_tools_log:
+                    e.forge_executed_tools = executed_tools_log
+                raise
+
+            if not tool_calls_acc:
                 cost_in, cost_out = self._get_model_costs(candidate)
                 cost = tokens_in / 1000 * cost_in + tokens_out_total / 1000 * cost_out
                 self._today_tokens += tokens_in + tokens_out_total
@@ -242,26 +295,36 @@ class ModelRouter:
                 self._log_usage(provider, candidate, tokens_in, tokens_out_total, task_type, cost)
                 return
 
+            ordered_calls = []
+            for idx in sorted(tool_calls_acc):
+                entry = tool_calls_acc[idx]
+                call_id = entry['id'] or f'call_{round_num}_{idx}'
+                ordered_calls.append({
+                    'id': call_id,
+                    'name': entry['name'] or '',
+                    'arguments': entry['arguments'],
+                })
+
             loop_messages.append({
                 'role': 'assistant',
-                'content': msg.content or '',
+                'content': round_content or None,
                 'tool_calls': [
                     {
-                        'id': tc.id,
+                        'id': c['id'],
                         'type': 'function',
-                        'function': {'name': tc.function.name, 'arguments': tc.function.arguments},
+                        'function': {'name': c['name'], 'arguments': c['arguments']},
                     }
-                    for tc in tool_calls
+                    for c in ordered_calls
                 ],
             })
 
-            for tc in tool_calls:
-                raw_name = tc.function.name
+            for c in ordered_calls:
+                raw_name = c['name']
                 server, _, tool_name = raw_name.partition('__')
                 display = f'{server}.{tool_name}' if tool_name else raw_name
 
                 try:
-                    args = json.loads(tc.function.arguments or '{}')
+                    args = json.loads(c['arguments'] or '{}')
                 except Exception:
                     args = {}
 
@@ -294,9 +357,11 @@ class ModelRouter:
                 capped_text = content_str if len(content_str) <= 4000 else content_str[:4000] + '...[truncated]'
                 yield json.dumps({'event': 'tool_result', 'id': call_id, 'ok': tool_ok, 'text': capped_text})
 
+                executed_tools_log.append((display, content_str))
+
                 loop_messages.append({
                     'role': 'tool',
-                    'tool_call_id': tc.id,
+                    'tool_call_id': c['id'],
                     'content': content_str,
                 })
 
