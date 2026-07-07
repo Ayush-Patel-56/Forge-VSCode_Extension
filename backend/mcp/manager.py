@@ -156,6 +156,22 @@ class MCPManager:
             return "uvx not found. Install uv first (pip install uv, or winget install astral-sh.uv), then retry."
         return f'{command} not found. Install Node.js and npm, then retry.'
 
+    @staticmethod
+    def _resolve_command(command: str) -> str | None:
+        found = shutil.which(command)
+        if found:
+            return found
+        # pip-installed launchers (e.g. uvx) often live in Python Scripts
+        # dirs that Windows doesn't put on PATH
+        import sysconfig
+        scheme = 'nt_user' if os.name == 'nt' else 'posix_user'
+        for path in {sysconfig.get_path('scripts'), sysconfig.get_path('scripts', scheme)}:
+            if path:
+                found = shutil.which(command, path=path)
+                if found:
+                    return found
+        return None
+
     async def _spawn(self, mcp_id: str, command: str, args: list, env_overrides: dict) -> dict:
         """Shared spawn logic used by install(), relaunch_installed(), and start().
 
@@ -164,7 +180,7 @@ class MCPManager:
         aliveness health check. Does NOT touch the database — callers own
         that. Returns {'status': 'ready'} or {'status': 'error', 'error': ...}.
         """
-        executable = shutil.which(command)
+        executable = self._resolve_command(command)
         if executable is None:
             return {'status': 'error', 'error': self._missing_command_error(command)}
 
