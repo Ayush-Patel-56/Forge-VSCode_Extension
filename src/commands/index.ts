@@ -25,10 +25,19 @@ export function registerCommands(
     }],
     ['forge.explain.repo', async () => {
       const wsPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-      if (!wsPath) return;
+      if (!wsPath) {
+        vscode.window.showWarningMessage('Forge: open a folder/workspace first to explain a repo.');
+        return;
+      }
       ChatPanel.createOrShow(ctx, backend, contextService, statusBar);
-      // Send special command to the panel
-      await backend.sendExplainRepo(wsPath);
+      try {
+        const summary = await backend.sendExplainRepo(wsPath);
+        await ChatPanel.currentPanel?.sendProgrammaticMessage(
+          `Explain this repository: describe its purpose, architecture, and key modules, and suggest a README outline. Key files:\n\n${summary}`
+        );
+      } catch (err: any) {
+        vscode.window.showErrorMessage(`Forge: failed to explain repo — ${err.message}`);
+      }
     }],
     ['forge.add.provider', async () => {
       const provider = await vscode.window.showQuickPick(

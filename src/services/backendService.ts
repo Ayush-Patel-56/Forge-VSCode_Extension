@@ -1,27 +1,45 @@
 // src/services/backendService.ts
 import * as cp from 'child_process';
 import * as vscode from 'vscode';
+import { StatusBarService } from './statusBarService';
 
 const PORT = 7822;
 const BASE_URL = `http://localhost:${PORT}`;
 const HEALTH_POLL_INTERVAL_MS = 200;
 const HEALTH_TIMEOUT_MS = 60_000;
+const MIN_PYTHON_MAJOR = 3;
+const MIN_PYTHON_MINOR = 11;
+const MAX_AUTO_RESTART_OFFERS = 2;
 
 export class BackendService {
   private proc: cp.ChildProcess | undefined;
   private activeModel = 'groq/llama-3.3-70b-versatile';
+  private readonly outputChannel = vscode.window.createOutputChannel('Forge Backend');
+  private pythonExecutable = 'python3';
+  private stopRequested = false;
+  private restartOffersUsed = 0;
+  private statusBar: StatusBarService | undefined;
 
   constructor(private ctx: vscode.ExtensionContext) {}
 
+  setStatusBarService(statusBar: StatusBarService): void {
+    this.statusBar = statusBar;
+  }
+
   async start(): Promise<void> {
-    const config = vscode.workspace.getConfiguration('forge');
-    const pythonPath = config.get<string>('pythonPath', 'python3');
+    this.stopRequested = false;
+
+    const pythonExecutable = await this.resolvePython();
+    this.pythonExecutable = pythonExecutable;
+
+    await this.ensureDependencies(pythonExecutable);
+
     const backendPath = this.ctx.asAbsolutePath('backend/main.py');
 
     // Inject stored API keys as env vars
     const env = await this.buildEnv();
 
-    this.proc = cp.spawn(pythonPath, [backendPath, '--port', String(PORT)], {
+    this.proc = cp.spawn(pythonExecutable, [backendPath, '--port', String(PORT)], {
       env,
       stdio: 'pipe',
       cwd: this.ctx.asAbsolutePath('backend'),
@@ -29,16 +47,164 @@ export class BackendService {
 
     this.proc.stderr?.on('data', (d: Buffer) => {
       const msg = d.toString().trim();
-      if (msg) console.error('[forge-backend]', msg);
+      if (msg) {
+        console.error('[forge-backend]', msg);
+        this.outputChannel.appendLine(msg);
+      }
     });
 
     this.proc.on('exit', (code) => {
       if (code !== 0 && code !== null) {
         console.error(`[forge-backend] exited with code ${code}`);
+        this.outputChannel.appendLine(`[forge-backend] exited with code ${code}`);
+        if (!this.stopRequested) {
+          this.handleUnexpectedExit(code);
+        }
       }
     });
 
     await this.waitForHealth();
+  }
+
+  // --- First-install experience -----------------------------------------------
+
+  /**
+   * Resolve a usable Python 3.11+ executable. Tries the configured
+   * forge.pythonPath first, then falls back to plain 'python'.
+   */
+  private async resolvePython(): Promise<string> {
+    const config = vscode.workspace.getConfiguration('forge');
+    const configured = config.get<string>('pythonPath', 'python3');
+
+    if (await this.isPythonUsable(configured)) return configured;
+    if (configured !== 'python' && await this.isPythonUsable('python')) return 'python';
+
+    throw new Error('Forge needs Python 3.11+ — install it and/or set forge.pythonPath');
+  }
+
+  private async isPythonUsable(exe: string): Promise<boolean> {
+    try {
+      const out = await this.runCommand(exe, ['--version'], 10_000);
+      const match = out.match(/(\d+)\.(\d+)/);
+      if (!match) return false;
+      const major = parseInt(match[1], 10);
+      const minor = parseInt(match[2], 10);
+      return major > MIN_PYTHON_MAJOR || (major === MIN_PYTHON_MAJOR && minor >= MIN_PYTHON_MINOR);
+    } catch {
+      return false;
+    }
+  }
+
+  /** Verify required backend packages are importable; offer to install if not. */
+  private async ensureDependencies(pythonExecutable: string): Promise<void> {
+    const REQUIRED_MODULES = ['fastapi', 'uvicorn', 'openai', 'chromadb', 'sentence_transformers', 'sqlalchemy', 'watchdog'];
+    const checkScript = `import ${REQUIRED_MODULES.join(', ')}`;
+
+    try {
+      await this.runCommand(pythonExecutable, ['-c', checkScript], 30_000);
+      return; // all good
+    } catch {
+      // fall through to install prompt
+    }
+
+    const choice = await vscode.window.showInformationMessage(
+      'Forge: backend dependencies missing. Install now? (~2GB, includes PyTorch)',
+      'Install',
+      'Cancel'
+    );
+
+    if (choice !== 'Install') {
+      throw new Error('Forge backend dependencies are missing. Choose "Install" when prompted, or install backend/requirements.txt manually.');
+    }
+
+    const requirementsPath = this.ctx.asAbsolutePath('backend/requirements.txt');
+
+    await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: 'Forge: installing backend dependencies...' },
+      async () => {
+        await this.pipInstall(pythonExecutable, requirementsPath);
+      }
+    );
+  }
+
+  private pipInstall(pythonExecutable: string, requirementsPath: string): Promise<void> {
+    this.outputChannel.show(true);
+    this.outputChannel.appendLine(`[forge-backend] installing dependencies: ${pythonExecutable} -m pip install -r ${requirementsPath}`);
+
+    return new Promise((resolve, reject) => {
+      const proc = cp.spawn(pythonExecutable, ['-m', 'pip', 'install', '-r', requirementsPath], { stdio: 'pipe' });
+
+      const streamLines = (d: Buffer) => {
+        const text = d.toString();
+        for (const line of text.split(/\r?\n/)) {
+          if (line) this.outputChannel.appendLine(line);
+        }
+      };
+
+      proc.stdout?.on('data', streamLines);
+      proc.stderr?.on('data', streamLines);
+      proc.on('error', (err) => reject(err));
+      proc.on('exit', (code) => {
+        if (code === 0) resolve();
+        else reject(new Error(`pip install failed with exit code ${code}. See "Forge Backend" output for details.`));
+      });
+    });
+  }
+
+  /** Spawn a short-lived command and collect combined stdout+stderr, with a timeout. */
+  private runCommand(exe: string, args: string[], timeoutMs: number): Promise<string> {
+    return new Promise((resolve, reject) => {
+      let out = '';
+      let proc: cp.ChildProcess;
+      try {
+        proc = cp.spawn(exe, args, { stdio: 'pipe' });
+      } catch (err) {
+        reject(err);
+        return;
+      }
+
+      const timer = setTimeout(() => {
+        proc.kill();
+        reject(new Error(`Command timed out: ${exe} ${args.join(' ')}`));
+      }, timeoutMs);
+
+      proc.stdout?.on('data', (d: Buffer) => (out += d.toString()));
+      proc.stderr?.on('data', (d: Buffer) => (out += d.toString()));
+      proc.on('error', (err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+      proc.on('exit', (code) => {
+        clearTimeout(timer);
+        if (code === 0) resolve(out);
+        else reject(new Error(`Command exited with code ${code}: ${out.trim()}`));
+      });
+    });
+  }
+
+  // --- Crash visibility ---------------------------------------------------------
+
+  private handleUnexpectedExit(code: number | null): void {
+    this.statusBar?.setError();
+
+    if (this.restartOffersUsed >= MAX_AUTO_RESTART_OFFERS) {
+      vscode.window.showErrorMessage(`Forge backend stopped unexpectedly (code ${code}). See Forge Backend output.`);
+      return;
+    }
+
+    this.restartOffersUsed++;
+    void vscode.window.showErrorMessage(
+      `Forge backend stopped unexpectedly (code ${code}). See Forge Backend output.`,
+      'Restart'
+    ).then((choice) => {
+      if (choice !== 'Restart') return;
+      this.start().then(() => {
+        this.statusBar?.setReady(this.getActiveModel());
+      }).catch((err) => {
+        this.statusBar?.setError();
+        vscode.window.showErrorMessage(`Forge: restart failed — ${err.message}`);
+      });
+    });
   }
 
   private async buildEnv(): Promise<NodeJS.ProcessEnv> {
@@ -234,12 +400,15 @@ export class BackendService {
     }
   }
 
-  async sendExplainRepo(workspacePath: string): Promise<void> {
-    await fetch(`${BASE_URL}/api/explain-repo`, {
+  async sendExplainRepo(workspacePath: string): Promise<string> {
+    const res = await fetch(`${BASE_URL}/api/explain-repo`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ workspace_path: workspacePath }),
     });
+    if (!res.ok) throw new Error(`Explain-repo API error: ${res.status}`);
+    const data = await res.json() as { summary: string };
+    return data.summary ?? '';
   }
 
   async queryContext(query: string, k = 8): Promise<{ content: string; file: string; line: number }[]> {
@@ -248,6 +417,7 @@ export class BackendService {
   }
 
   stop(): void {
+    this.stopRequested = true;
     this.proc?.kill('SIGTERM');
   }
 }

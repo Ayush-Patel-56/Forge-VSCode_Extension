@@ -18,6 +18,7 @@ export async function activate(ctx: vscode.ExtensionContext) {
   backend = new BackendService(ctx);
   const contextService = new ContextService(backend);
   statusBar = new StatusBarService(ctx);
+  backend.setStatusBarService(statusBar);
 
   statusBar.setStarting();
 

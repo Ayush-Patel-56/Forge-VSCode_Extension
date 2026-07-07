@@ -36,6 +36,10 @@ export default function App() {
     const handler = (event: MessageEvent) => {
       const msg = event.data;
       switch (msg.type) {
+        case 'USER_MESSAGE':
+          setIsStreaming(true);
+          setMessages(prev => [...prev, { id: crypto.randomUUID(), role: 'user', content: msg.content }]);
+          break;
         case 'STREAM_CHUNK':
           setMessages(prev => {
             const last = prev[prev.length - 1];

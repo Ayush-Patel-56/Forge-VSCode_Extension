@@ -47,6 +47,11 @@ export type WebviewToExtension =
 
 export type ExtensionToWebview =
   | {
+      type: 'USER_MESSAGE';
+      content: string;
+      conversationId: string;
+    }
+  | {
       type: 'STREAM_CHUNK';
       chunk: string;
       conversationId: string;

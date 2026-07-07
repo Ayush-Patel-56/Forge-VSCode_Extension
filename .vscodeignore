@@ -1,16 +1,20 @@
 .vscode/**
 .vscode-test/**
+.superpowers/**
 webview-src/**
 src/**
 backend/**/__pycache__/**
+backend/tests/**
 backend/venv/**
 backend/.venv/**
+backend/**/*.pyc
 **/*.ts
 tsconfig.json
 webview-src/tsconfig.json
 webpack.config.js
 tailwind.config.js
 postcss.config.js
+package-lock.json
 **/.gitignore
 **/.eslintrc*
 **/tsconfig.json
@@ -18,3 +22,4 @@ postcss.config.js
 .gitattributes
 forge_spec.md
 node_modules/**
+*.vsix

@@ -52,59 +52,7 @@ export class ChatPanel {
   private async handleMessage(msg: WebviewToExtension) {
     switch (msg.type) {
       case 'SEND_MESSAGE': {
-        // Gather context
-        const snapshot = await this.contextService.gatherContext(msg.content);
-
-        // Add to conversation history
-        this.conversationHistory.push({ role: 'user', content: msg.content });
-
-        // Build messages with context injection
-        const systemContent = this.buildSystemPrompt(snapshot);
-        const messages = [
-          { role: 'system', content: systemContent },
-          ...this.conversationHistory.slice(-20), // keep last 20 turns
-        ];
-
-        let assistantContent = '';
-
-        // Stream response
-        try {
-          for await (const chunk of this.backend.streamChat({
-            messages,
-            model_id: msg.modelId,
-            conversation_id: msg.conversationId,
-          })) {
-            assistantContent += chunk;
-            this.post<ExtensionToWebview>({
-              type: 'STREAM_CHUNK',
-              chunk,
-              conversationId: msg.conversationId,
-            });
-          }
-        } catch (err: any) {
-          this.post<ExtensionToWebview>({
-            type: 'STREAM_ERROR',
-            error: err.message,
-            conversationId: msg.conversationId,
-          });
-          return;
-        }
-
-        this.conversationHistory.push({ role: 'assistant', content: assistantContent });
-
-        this.post<ExtensionToWebview>({
-          type: 'STREAM_DONE',
-          conversationId: msg.conversationId,
-        });
-
-        // Update usage in status bar
-        const usage = await this.backend.getUsage();
-        this.statusBar?.updateUsage(usage.today_tokens, usage.today_usd);
-        this.post<ExtensionToWebview>({
-          type: 'USAGE_UPDATE',
-          tokensUsed: usage.today_tokens,
-          costUsd: usage.today_usd,
-        });
+        await this.runChatTurn(msg.content, msg.conversationId, msg.modelId);
         break;
       }
 
@@ -124,6 +72,77 @@ export class ChatPanel {
         break;
       }
     }
+  }
+
+  /**
+   * Send a message into the chat programmatically (e.g. from a command like
+   * "Explain this repo"), reusing the exact SEND_MESSAGE handling path so the
+   * user message renders in the webview and the assistant reply streams in.
+   */
+  async sendProgrammaticMessage(content: string): Promise<void> {
+    const conversationId = `programmatic-${Date.now()}`;
+    this.post<ExtensionToWebview>({
+      type: 'USER_MESSAGE',
+      content,
+      conversationId,
+    });
+    await this.runChatTurn(content, conversationId);
+  }
+
+  private async runChatTurn(content: string, conversationId: string, modelId?: string): Promise<void> {
+    // Gather context
+    const snapshot = await this.contextService.gatherContext(content);
+
+    // Add to conversation history
+    this.conversationHistory.push({ role: 'user', content });
+
+    // Build messages with context injection
+    const systemContent = this.buildSystemPrompt(snapshot);
+    const messages = [
+      { role: 'system', content: systemContent },
+      ...this.conversationHistory.slice(-20), // keep last 20 turns
+    ];
+
+    let assistantContent = '';
+
+    // Stream response
+    try {
+      for await (const chunk of this.backend.streamChat({
+        messages,
+        model_id: modelId,
+        conversation_id: conversationId,
+      })) {
+        assistantContent += chunk;
+        this.post<ExtensionToWebview>({
+          type: 'STREAM_CHUNK',
+          chunk,
+          conversationId,
+        });
+      }
+    } catch (err: any) {
+      this.post<ExtensionToWebview>({
+        type: 'STREAM_ERROR',
+        error: err.message,
+        conversationId,
+      });
+      return;
+    }
+
+    this.conversationHistory.push({ role: 'assistant', content: assistantContent });
+
+    this.post<ExtensionToWebview>({
+      type: 'STREAM_DONE',
+      conversationId,
+    });
+
+    // Update usage in status bar
+    const usage = await this.backend.getUsage();
+    this.statusBar?.updateUsage(usage.today_tokens, usage.today_usd);
+    this.post<ExtensionToWebview>({
+      type: 'USAGE_UPDATE',
+      tokensUsed: usage.today_tokens,
+      costUsd: usage.today_usd,
+    });
   }
 
   private buildSystemPrompt(snapshot: ContextSnapshot): string {
