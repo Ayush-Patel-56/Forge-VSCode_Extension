@@ -90,7 +90,10 @@ async def run_test() -> bool:
         context_chunks=[],
     ):
         payload = json.loads(raw)
-        collected.append(payload['content'])
+        # stream() now also yields typed status/tool_call/tool_result events
+        # (see model_router.py); only 'content' chunks matter for this test.
+        if 'content' in payload:
+            collected.append(payload['content'])
 
     streamed_text = ''.join(collected)
 

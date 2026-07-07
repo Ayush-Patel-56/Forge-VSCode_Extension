@@ -13,6 +13,15 @@ class ChatRequest(BaseModel):
     model_id: Optional[str] = None
     context_chunks: Optional[list[str]] = None
     conversation_id: Optional[str] = None
+    workspace_path: Optional[str] = None
+    thinking: Optional[bool] = None
+    effort: Optional[str] = None  # 'low' | 'medium' | 'high' | 'max'
+
+
+class ApprovalRequest(BaseModel):
+    approval_id: str
+    decision: str  # 'allow' | 'deny' | 'other'
+    detail: Optional[str] = None
 
 
 class CompleteRequest(BaseModel):

@@ -52,7 +52,12 @@ export class ChatPanel {
   private async handleMessage(msg: WebviewToExtension) {
     switch (msg.type) {
       case 'SEND_MESSAGE': {
-        await this.runChatTurn(msg.content, msg.conversationId, msg.modelId);
+        await this.runChatTurn(msg.content, msg.conversationId, msg.modelId, msg.thinking, msg.effort);
+        break;
+      }
+
+      case 'APPROVAL_RESPONSE': {
+        await this.backend.sendApproval(msg.approvalId, msg.decision, msg.detail);
         break;
       }
 
@@ -89,7 +94,13 @@ export class ChatPanel {
     await this.runChatTurn(content, conversationId);
   }
 
-  private async runChatTurn(content: string, conversationId: string, modelId?: string): Promise<void> {
+  private async runChatTurn(
+    content: string,
+    conversationId: string,
+    modelId?: string,
+    thinking?: boolean,
+    effort?: string
+  ): Promise<void> {
     // Gather context
     const snapshot = await this.contextService.gatherContext(content);
 
@@ -103,6 +114,8 @@ export class ChatPanel {
       ...this.conversationHistory.slice(-20), // keep last 20 turns
     ];
 
+    const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+
     let assistantContent = '';
 
     // Stream response
@@ -111,13 +124,24 @@ export class ChatPanel {
         messages,
         model_id: modelId,
         conversation_id: conversationId,
+        workspace_path: workspacePath,
+        thinking,
+        effort,
       })) {
-        assistantContent += chunk;
-        this.post<ExtensionToWebview>({
-          type: 'STREAM_CHUNK',
-          chunk,
-          conversationId,
-        });
+        if (typeof chunk === 'string') {
+          assistantContent += chunk;
+          this.post<ExtensionToWebview>({
+            type: 'STREAM_CHUNK',
+            chunk,
+            conversationId,
+          });
+        } else {
+          this.post<ExtensionToWebview>({
+            type: 'STREAM_EVENT',
+            ev: chunk,
+            conversationId,
+          });
+        }
       }
     } catch (err: any) {
       this.post<ExtensionToWebview>({

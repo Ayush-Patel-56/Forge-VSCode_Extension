@@ -2,6 +2,7 @@
 import * as cp from 'child_process';
 import * as vscode from 'vscode';
 import { StatusBarService } from './statusBarService';
+import { ForgeStreamEvent } from '../types';
 
 const PORT = 7822;
 const BASE_URL = `http://localhost:${PORT}`;
@@ -246,7 +247,10 @@ export class BackendService {
     model_id?: string;
     context_chunks?: string[];
     conversation_id: string;
-  }): AsyncGenerator<string> {
+    workspace_path?: string;
+    thinking?: boolean;
+    effort?: string;
+  }): AsyncGenerator<string | ForgeStreamEvent> {
     const res = await fetch(`${BASE_URL}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -267,12 +271,24 @@ export class BackendService {
           const data = line.slice(6).trim();
           if (data === '[DONE]') return;
           try {
-            const parsed = JSON.parse(data) as { content: string };
-            if (parsed.content) yield parsed.content;
+            const parsed = JSON.parse(data) as { content?: string } & Partial<ForgeStreamEvent>;
+            if (parsed.event) {
+              yield parsed as ForgeStreamEvent;
+            } else if (parsed.content) {
+              yield parsed.content;
+            }
           } catch { /* ignore malformed SSE lines */ }
         }
       }
     }
+  }
+
+  async sendApproval(approvalId: string, decision: 'allow' | 'deny' | 'other', detail?: string): Promise<void> {
+    await fetch(`${BASE_URL}/api/chat/approval`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ approval_id: approvalId, decision, detail }),
+    });
   }
 
   // --- Inline completions ------------------------------------------------------

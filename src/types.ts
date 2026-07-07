@@ -1,5 +1,13 @@
 // src/types.ts
 
+// --- Typed SSE stream events (backend/router/model_router.py) --------------
+
+export type ForgeStreamEvent =
+  | { event: 'status'; label: 'thinking' | 'responding' }
+  | { event: 'tool_call'; id: string; name: string; args: unknown }
+  | { event: 'tool_result'; id: string; ok: boolean; text: string }
+  | { event: 'approval_request'; id: string; command: string; cwd: string };
+
 // --- Renderer -> Extension Host ---------------------------------------------
 
 export type WebviewToExtension =
@@ -8,6 +16,14 @@ export type WebviewToExtension =
       content: string;
       conversationId: string;
       modelId?: string;
+      thinking?: boolean;
+      effort?: string;
+    }
+  | {
+      type: 'APPROVAL_RESPONSE';
+      approvalId: string;
+      decision: 'allow' | 'deny' | 'other';
+      detail?: string;
     }
   | {
       type: 'INSTALL_MCP';
@@ -63,6 +79,11 @@ export type ExtensionToWebview =
   | {
       type: 'STREAM_ERROR';
       error: string;
+      conversationId: string;
+    }
+  | {
+      type: 'STREAM_EVENT';
+      ev: ForgeStreamEvent;
       conversationId: string;
     }
   | {

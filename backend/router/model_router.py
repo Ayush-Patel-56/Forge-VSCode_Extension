@@ -13,6 +13,8 @@ TASK_PROFILES = {
     'fim':     ['groq/llama-3.1-8b-instant', 'groq/llama-3.3-70b-versatile'],
 }
 
+EFFORT_MAX_TOKENS = {'low': 1024, 'medium': 4096, 'high': 8192, 'max': 16384}
+
 PROVIDER_CONFIGS = {
     'groq':       {'base_url': 'https://api.groq.com/openai/v1',                         'env_key': 'FORGE_GROQ_KEY'},
     'gemini':     {'base_url': 'https://generativelanguage.googleapis.com/v1beta/openai', 'env_key': 'FORGE_GEMINI_KEY'},
@@ -108,7 +110,10 @@ class ModelRouter:
         fallback = self._get_candidates(task_type, None)
         return [self._default_model] + [m for m in fallback if m != self._default_model]
 
-    async def stream(self, messages: list, model_id: str | None, context_chunks: list[str], tools_provider=None):
+    async def stream(
+        self, messages: list, model_id: str | None, context_chunks: list[str], tools_provider=None,
+        thinking: bool = False, effort: str = 'medium',
+    ):
         if context_chunks:
             ctx = '\n\n'.join(f'```\n{c}\n```' for c in context_chunks)
             messages = [{'role': 'system', 'content': f'Relevant code from codebase:\n{ctx}'}] + messages
@@ -121,10 +126,14 @@ class ModelRouter:
 
         openai_tools = None
         tool_executor = None
+        event_queue = None
         if tools_provider is not None:
             provided = tools_provider()
             if provided:
-                openai_tools, tool_executor = provided
+                if len(provided) == 3:
+                    openai_tools, tool_executor, event_queue = provided
+                else:
+                    openai_tools, tool_executor = provided
 
         for candidate in candidates:
             if candidate in self._rate_limited: continue
@@ -139,6 +148,7 @@ class ModelRouter:
                         async for out in self._run_tool_loop(
                             client, model, messages, openai_tools, tool_executor,
                             provider, candidate, task_type, tokens_in,
+                            thinking=thinking, effort=effort, event_queue=event_queue,
                         ):
                             yield out
                         used_tool_loop = True
@@ -152,13 +162,18 @@ class ModelRouter:
                 if used_tool_loop:
                     return
 
-                stream = await client.chat.completions.create(
-                    model=model, messages=messages, stream=True, max_tokens=4096
+                yield json.dumps({'event': 'status', 'label': 'thinking'})
+                stream = await self._create_with_thinking(
+                    client, thinking, effort, model=model, messages=messages, stream=True,
                 )
                 tokens_out = 0
+                first_chunk = True
                 async for chunk in stream:
                     delta = chunk.choices[0].delta.content or ''
                     if delta:
+                        if first_chunk:
+                            yield json.dumps({'event': 'status', 'label': 'responding'})
+                            first_chunk = False
                         tokens_out += len(delta) // 4
                         yield f'{{"content": {json.dumps(delta)}}}'
 
@@ -185,19 +200,23 @@ class ModelRouter:
     async def _run_tool_loop(
         self, client, model: str, messages: list, openai_tools: list, tool_executor,
         provider: str, candidate: str, task_type: str, tokens_in: int,
+        thinking: bool = False, effort: str = 'medium', event_queue: asyncio.Queue | None = None,
     ):
-        """Non-streaming tool-calling loop (max 5 round-trips). Yields the same
-        SSE-chunk JSON strings stream() yields: one progress chunk per tool
-        call, then a single final content chunk once the model responds
-        without further tool_calls. Logs usage/cost on success. Raises on any
-        failure so the caller can fall back to plain streaming.
+        """Non-streaming tool-calling loop (max 5 round-trips). Yields typed
+        SSE-chunk JSON strings: a status/thinking event per round, a
+        tool_call/tool_result event pair per tool invocation, and a single
+        final content chunk once the model responds without further
+        tool_calls. Logs usage/cost on success. Raises on any failure so the
+        caller can fall back to plain streaming.
         """
         loop_messages = list(messages)
         tokens_out_total = 0
+        call_seq = 0
 
         for _ in range(5):
-            response = await client.chat.completions.create(
-                model=model, messages=loop_messages, tools=openai_tools, max_tokens=4096,
+            yield json.dumps({'event': 'status', 'label': 'thinking'})
+            response = await self._create_with_thinking(
+                client, thinking, effort, model=model, messages=loop_messages, tools=openai_tools,
             )
             choice = response.choices[0]
             msg = choice.message
@@ -213,6 +232,7 @@ class ModelRouter:
             if not tool_calls:
                 content = msg.content or ''
                 if content:
+                    yield json.dumps({'event': 'status', 'label': 'responding'})
                     yield f'{{"content": {json.dumps(content)}}}'
 
                 cost_in, cost_out = self._get_model_costs(candidate)
@@ -239,18 +259,29 @@ class ModelRouter:
                 raw_name = tc.function.name
                 server, _, tool_name = raw_name.partition('__')
                 display = f'{server}.{tool_name}' if tool_name else raw_name
-                progress_text = '\n⚙ calling ' + display + '...\n'
-                yield f'{{"content": {json.dumps(progress_text)}}}'
 
                 try:
                     args = json.loads(tc.function.arguments or '{}')
                 except Exception:
                     args = {}
 
-                try:
-                    result = await tool_executor(raw_name, args)
-                except Exception as exc:
-                    result = {'error': str(exc)}
+                call_seq += 1
+                call_id = f'tc_{call_seq}'
+                yield json.dumps({'event': 'tool_call', 'id': call_id, 'name': display, 'args': args})
+
+                if event_queue is not None:
+                    task = asyncio.ensure_future(tool_executor(raw_name, args))
+                    async for evline in self._drain_queue_while(task, event_queue):
+                        yield evline
+                    try:
+                        result = task.result()
+                    except Exception as exc:
+                        result = {'error': str(exc)}
+                else:
+                    try:
+                        result = await tool_executor(raw_name, args)
+                    except Exception as exc:
+                        result = {'error': str(exc)}
 
                 if isinstance(result, dict):
                     content_str = result.get('text') or json.dumps(result)
@@ -258,6 +289,10 @@ class ModelRouter:
                     content_str = result
                 else:
                     content_str = json.dumps(result)
+
+                tool_ok = not (isinstance(result, dict) and 'error' in result)
+                capped_text = content_str if len(content_str) <= 4000 else content_str[:4000] + '...[truncated]'
+                yield json.dumps({'event': 'tool_result', 'id': call_id, 'ok': tool_ok, 'text': capped_text})
 
                 loop_messages.append({
                     'role': 'tool',
@@ -274,6 +309,49 @@ class ModelRouter:
         self._today_cost_usd += cost
         self._log_usage(provider, candidate, tokens_in, tokens_out_total, task_type, cost)
         yield f'{{"content": {json.dumps(chr(10) + "(stopped: tool loop exceeded max iterations)")}}}'
+
+    async def _drain_queue_while(self, task: 'asyncio.Future', event_queue: 'asyncio.Queue'):
+        """Yield SSE-ready JSON strings for any events pushed onto
+        event_queue while `task` is still running, so events (e.g.
+        approval_request) reach the client BEFORE the executor blocks on
+        something the client must respond to (e.g. an approval decision).
+        Deadlock-free: the queue is drained concurrently with the task via
+        asyncio.wait, never after it.
+        """
+        pending_get = asyncio.ensure_future(event_queue.get())
+        try:
+            while True:
+                done, _ = await asyncio.wait({task, pending_get}, return_when=asyncio.FIRST_COMPLETED)
+                if pending_get in done:
+                    yield json.dumps(pending_get.result())
+                    pending_get = asyncio.ensure_future(event_queue.get())
+                if task in done:
+                    break
+        finally:
+            if not pending_get.done():
+                pending_get.cancel()
+        while not event_queue.empty():
+            yield json.dumps(event_queue.get_nowait())
+
+    async def _create_with_thinking(self, client, thinking: bool, effort: str, **kwargs):
+        """Wraps client.chat.completions.create() with the effort -> max_tokens
+        mapping and, when thinking is requested, a reasoning_effort kwarg.
+        If the provider rejects reasoning_effort (unsupported param / 400),
+        retries once without it so a thinking request never breaks a provider
+        that doesn't support it."""
+        kwargs['max_tokens'] = EFFORT_MAX_TOKENS.get(effort, EFFORT_MAX_TOKENS['medium'])
+
+        if not thinking:
+            return await client.chat.completions.create(**kwargs)
+
+        reasoning_effort = 'low' if effort == 'low' else 'medium' if effort == 'medium' else 'high'
+        try:
+            return await client.chat.completions.create(**kwargs, reasoning_effort=reasoning_effort)
+        except Exception as e:
+            err_str = str(e).lower()
+            if 'reasoning_effort' in err_str or 'unsupported' in err_str or '400' in err_str or 'bad request' in err_str:
+                return await client.chat.completions.create(**kwargs)
+            raise
 
     async def complete_fim(self, prefix: str, suffix: str, language: str) -> str | None:
         # Groq/Gemini expose only the chat endpoint, so FIM runs as a strict

@@ -11,9 +11,10 @@ from mcp.manager import MCPManager
 from db import init_db, get_session
 from db.models import Settings
 from schemas import (
-    ChatRequest, CompleteRequest, IndexRequest,
+    ApprovalRequest, ChatRequest, CompleteRequest, IndexRequest,
     MCPInstallRequest, MCPStartRequest, ProviderRequest, SettingsPatch
 )
+from tools.approvals import resolve_approval, run_terminal_with_approval
 
 model_router = ModelRouter()
 context_engine = ContextEngine()
@@ -93,17 +94,70 @@ def _mcp_tools_provider():
     return openai_tools, executor
 
 
+TERMINAL_TOOL = {
+    'type': 'function',
+    'function': {
+        'name': 'terminal__run_command',
+        'description': "Run a shell command in the user's workspace (git, build tools, etc.). The user must approve each command.",
+        'parameters': {
+            'type': 'object',
+            'properties': {
+                'command': {'type': 'string', 'description': 'The shell command to run.'},
+                'cwd': {'type': 'string', 'description': "Working directory (defaults to the user's workspace)."},
+            },
+            'required': ['command'],
+        },
+    },
+}
+
+
+def _build_tools_provider(workspace_path: str):
+    """Builds a per-request tools_provider for model_router.stream(). Always
+    exposes the built-in approval-gated terminal__run_command tool, alongside
+    whatever MCP tools are currently running. Returns a 3-tuple
+    (openai_tools, executor, event_queue) -- the event_queue lets the terminal
+    tool's approval flow push an approval_request event into the SSE stream
+    while stream() is mid-iteration (see ModelRouter._drain_queue_while)."""
+    def provider():
+        mcp_result = _mcp_tools_provider()
+        mcp_tools, mcp_executor = mcp_result if mcp_result else ([], None)
+
+        openai_tools = list(mcp_tools) + [TERMINAL_TOOL]
+        event_queue: asyncio.Queue = asyncio.Queue()
+
+        async def executor(raw_name: str, arguments: dict):
+            if raw_name == 'terminal__run_command':
+                return await run_terminal_with_approval(event_queue, workspace_path, arguments)
+            if mcp_executor is not None:
+                return await mcp_executor(raw_name, arguments)
+            return {'error': f'Unknown tool: {raw_name}'}
+
+        return openai_tools, executor, event_queue
+
+    return provider
+
+
 @app.post('/api/chat')
 async def chat(body: ChatRequest):
     messages = [m.model_dump() for m in body.messages]
+    workspace_path = body.workspace_path or os.getcwd()
 
     async def generate():
         async for chunk in model_router.stream(
-            messages, body.model_id, body.context_chunks or [], tools_provider=_mcp_tools_provider
+            messages, body.model_id, body.context_chunks or [],
+            tools_provider=_build_tools_provider(workspace_path),
+            thinking=body.thinking or False,
+            effort=body.effort or 'medium',
         ):
             yield f'data: {chunk}\n\n'
         yield 'data: [DONE]\n\n'
     return StreamingResponse(generate(), media_type='text/event-stream')
+
+
+@app.post('/api/chat/approval')
+async def chat_approval(body: ApprovalRequest):
+    ok = resolve_approval(body.approval_id, body.decision, body.detail)
+    return {'status': 'ok' if ok else 'not_found'}
 
 
 @app.post('/api/complete')

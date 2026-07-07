@@ -50,6 +50,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           ...this.conversationHistory.slice(-20),
         ];
 
+        const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+
         let assistantContent = '';
 
         try {
@@ -57,13 +59,24 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             messages,
             model_id: msg.modelId,
             conversation_id: msg.conversationId,
+            workspace_path: workspacePath,
+            thinking: msg.thinking,
+            effort: msg.effort,
           })) {
-            assistantContent += chunk;
-            this.post<ExtensionToWebview>({
-              type: 'STREAM_CHUNK',
-              chunk,
-              conversationId: msg.conversationId,
-            });
+            if (typeof chunk === 'string') {
+              assistantContent += chunk;
+              this.post<ExtensionToWebview>({
+                type: 'STREAM_CHUNK',
+                chunk,
+                conversationId: msg.conversationId,
+              });
+            } else {
+              this.post<ExtensionToWebview>({
+                type: 'STREAM_EVENT',
+                ev: chunk,
+                conversationId: msg.conversationId,
+              });
+            }
           }
         } catch (err: any) {
           this.post<ExtensionToWebview>({
@@ -88,6 +101,11 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           tokensUsed: usage.today_tokens,
           costUsd: usage.today_usd,
         });
+        break;
+      }
+
+      case 'APPROVAL_RESPONSE': {
+        await this.backend.sendApproval(msg.approvalId, msg.decision, msg.detail);
         break;
       }
 

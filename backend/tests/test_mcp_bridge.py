@@ -187,25 +187,25 @@ async def run_router_loop_test() -> bool:
     fake_client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create)))
     router._get_client = lambda provider: fake_client  # type: ignore[method-assign]
 
-    collected = []
+    events = []
     async for raw in router.stream(
         messages=[{'role': 'user', 'content': 'please use the fake tool'}],
         model_id=None,
         context_chunks=[],
         tools_provider=fake_tools_provider,
     ):
-        payload = json.loads(raw)
-        collected.append(payload['content'])
+        events.append(json.loads(raw))
 
-    progress_chunks = [c for c in collected if 'calling fakeserver.faketool' in c]
-    if not progress_chunks:
-        print(f"FAIL: expected a progress chunk mentioning 'calling fakeserver.faketool', got {collected!r}")
+    # The plain-text "⚙ calling ..." progress chunk was replaced by a typed
+    # tool_call event (see model_router.py's typed SSE event protocol).
+    collected = [e['content'] for e in events if 'content' in e]
+
+    tool_call_events = [e for e in events if e.get('event') == 'tool_call' and e.get('name') == 'fakeserver.faketool']
+    if not tool_call_events:
+        print(f"FAIL: expected a tool_call event for 'fakeserver.faketool', got {events!r}")
         ok = False
     else:
-        # Console codepage (e.g. Windows cp1252) may not encode the gear glyph;
-        # print an ascii-safe repr rather than crashing the test on a print().
-        safe_repr = progress_chunks[0].encode('ascii', errors='backslashreplace').decode('ascii')
-        print(f"PASS: router yielded a tool-call progress chunk: {safe_repr!r}")
+        print(f"PASS: router yielded a typed tool_call event: {tool_call_events[0]!r}")
 
     final_chunks = [c for c in collected if c == 'final answer from the model']
     if not final_chunks:
