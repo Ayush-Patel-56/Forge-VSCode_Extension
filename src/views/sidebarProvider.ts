@@ -124,6 +124,21 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         this.conversationHistory = [];
         break;
       }
+
+      case 'REQUEST_MODELS': {
+        const models = await this.backend.getAvailableModels();
+        this.post<ExtensionToWebview>({
+          type: 'MODELS_LIST',
+          models: models.map(m => ({ id: m.id, display_name: m.display_name, is_free: m.is_free })),
+        });
+        break;
+      }
+
+      case 'SET_MODEL': {
+        await this.backend.setModel(msg.modelId);
+        this.statusBar?.setReady(msg.modelId);
+        break;
+      }
     }
   }
 
