@@ -145,7 +145,7 @@ class ModelRouter:
     async def stream(
         self, messages: list, model_id: str | None, context_chunks: list[str], tools_provider=None,
         thinking: bool = False, effort: str = 'medium',
-        has_images: bool = False,
+        has_images: bool = False, auto_fallback: bool = True,
     ):
         if context_chunks:
             ctx = '\n\n'.join(f'```\n{c}\n```' for c in context_chunks)
@@ -167,6 +167,9 @@ class ModelRouter:
                 yield f'{{"content": {json.dumps("Attach requires a vision-capable model — add a Gemini key")}}}'
                 return
             candidates = vision_candidates
+
+        if not auto_fallback and model_id:
+            candidates = [model_id]
 
         total_chars = sum(len(self._extract_text(m.get('content'))) for m in messages)
         tokens_in = total_chars // 4
@@ -257,6 +260,9 @@ class ModelRouter:
                 else:
                     continue
 
+        if not auto_fallback and model_id:
+            yield f'{{"content": {json.dumps(f"Error: model {model_id} failed and auto-fallback is disabled.")}}}'
+            return
         yield f'{{"content": "Error: all configured providers exhausted. Add an API key via forge.add.provider"}}'
 
     async def _run_tool_loop(

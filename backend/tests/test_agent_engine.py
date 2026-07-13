@@ -791,6 +791,50 @@ async def run_gated_mcp_approval_test() -> bool:
     return ok
 
 
+# ---------------------------------------------------------------------------
+# Part 6: auto_fallback=False -- a failing selected model must not fall back
+# ---------------------------------------------------------------------------
+
+async def run_auto_fallback_disabled_test() -> bool:
+    ok = True
+    router = ModelRouter()
+    router._log_usage = lambda *args, **kwargs: None  # type: ignore[method-assign]
+
+    call_count = {'n': 0}
+
+    async def fake_create(**kwargs):
+        call_count['n'] += 1
+        raise Exception('500 internal server error')
+
+    fake_client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create)))
+    router._get_client = lambda provider: fake_client  # type: ignore[method-assign]
+
+    selected_model = 'groq/llama-3.3-70b-versatile'
+    events = []
+    async for raw in router.stream(
+        messages=[{'role': 'user', 'content': 'hello'}],
+        model_id=selected_model,
+        context_chunks=[],
+        auto_fallback=False,
+    ):
+        events.append(json.loads(raw))
+
+    if call_count['n'] != 1:
+        print(f"FAIL: expected exactly 1 create() call (no fallback candidate tried), got {call_count['n']}")
+        ok = False
+    else:
+        print("PASS: auto_fallback=False tried exactly one candidate")
+
+    content = ''.join(e['content'] for e in events if 'content' in e)
+    if selected_model not in content or 'exhausted' in content.lower():
+        print(f"FAIL: expected an error naming {selected_model!r} (not the generic 'exhausted' message), got {content!r}")
+        ok = False
+    else:
+        print(f"PASS: error content named the failed model: {content!r}")
+
+    return ok
+
+
 def main() -> int:
     ok_terminal = asyncio.run(run_terminal_tests())
     ok_router_events = asyncio.run(run_router_typed_events_test())
@@ -799,10 +843,11 @@ def main() -> int:
     ok_approval = asyncio.run(run_approval_flow_test())
     ok_vision_routing = asyncio.run(run_vision_routing_test())
     ok_gated_mcp_approval = asyncio.run(run_gated_mcp_approval_test())
+    ok_auto_fallback_disabled = asyncio.run(run_auto_fallback_disabled_test())
 
     ok = (
         ok_terminal and ok_router_events and ok_thinking_retry and ok_tool_loop_fallback
-        and ok_approval and ok_vision_routing and ok_gated_mcp_approval
+        and ok_approval and ok_vision_routing and ok_gated_mcp_approval and ok_auto_fallback_disabled
     )
     if ok:
         print("PASS: all agent-engine assertions succeeded")

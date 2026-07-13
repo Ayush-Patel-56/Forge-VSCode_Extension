@@ -211,6 +211,7 @@ async def chat(body: ChatRequest):
             thinking=body.thinking or False,
             effort=body.effort or 'medium',
             has_images=bool(body.images),
+            auto_fallback=body.auto_fallback if body.auto_fallback is not None else True,
         ):
             yield f'data: {chunk}\n\n'
         yield 'data: [DONE]\n\n'

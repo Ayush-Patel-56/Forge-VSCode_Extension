@@ -24,6 +24,7 @@ class ChatRequest(BaseModel):
     effort: Optional[str] = None  # 'low' | 'medium' | 'high' | 'max'
     images: Optional[list[ImageAttachment]] = None
     mode: Optional[str] = None  # 'manual' | 'auto' | 'edit' | 'plan' (default 'manual')
+    auto_fallback: Optional[bool] = None  # default True (preserve today's fallback chain)
 
 
 class ApprovalRequest(BaseModel):

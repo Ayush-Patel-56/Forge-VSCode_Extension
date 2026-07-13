@@ -52,7 +52,15 @@ export class ChatPanel {
   private async handleMessage(msg: WebviewToExtension) {
     switch (msg.type) {
       case 'SEND_MESSAGE': {
-        await this.runChatTurn(msg.content, msg.conversationId, msg.modelId, msg.thinking, msg.effort);
+        await this.runChatTurn(
+          msg.content, msg.conversationId, msg.modelId, msg.thinking, msg.effort,
+          msg.images, msg.mode, msg.autoFallback
+        );
+        break;
+      }
+
+      case 'REWIND': {
+        this.rewindConversation();
         break;
       }
 
@@ -109,12 +117,29 @@ export class ChatPanel {
     await this.runChatTurn(content, conversationId);
   }
 
+  /**
+   * Pop the trailing assistant + user entries off conversationHistory, so a
+   * rewound turn can be re-sent from scratch. Repeatable; a no-op when the
+   * history is already empty.
+   */
+  private rewindConversation(): void {
+    if (this.conversationHistory[this.conversationHistory.length - 1]?.role === 'assistant') {
+      this.conversationHistory.pop();
+    }
+    if (this.conversationHistory[this.conversationHistory.length - 1]?.role === 'user') {
+      this.conversationHistory.pop();
+    }
+  }
+
   private async runChatTurn(
     content: string,
     conversationId: string,
     modelId?: string,
     thinking?: boolean,
-    effort?: string
+    effort?: string,
+    images?: { name: string; mime: string; dataBase64: string }[],
+    mode?: 'manual' | 'auto' | 'edit' | 'plan',
+    autoFallback?: boolean
   ): Promise<void> {
     // Gather context
     const snapshot = await this.contextService.gatherContext(content);
@@ -142,6 +167,9 @@ export class ChatPanel {
         workspace_path: workspacePath,
         thinking,
         effort,
+        images,
+        mode,
+        autoFallback,
       })) {
         if (typeof chunk === 'string') {
           assistantContent += chunk;

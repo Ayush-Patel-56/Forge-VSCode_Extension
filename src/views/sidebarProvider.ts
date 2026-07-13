@@ -62,6 +62,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             workspace_path: workspacePath,
             thinking: msg.thinking,
             effort: msg.effort,
+            images: msg.images,
+            mode: msg.mode,
+            autoFallback: msg.autoFallback,
           })) {
             if (typeof chunk === 'string') {
               assistantContent += chunk;
@@ -104,6 +107,11 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         break;
       }
 
+      case 'REWIND': {
+        this.rewindConversation();
+        break;
+      }
+
       case 'APPROVAL_RESPONSE': {
         await this.backend.sendApproval(msg.approvalId, msg.decision, msg.detail);
         break;
@@ -139,6 +147,20 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         this.statusBar?.setReady(msg.modelId);
         break;
       }
+    }
+  }
+
+  /**
+   * Pop the trailing assistant + user entries off conversationHistory, so a
+   * rewound turn can be re-sent from scratch. Repeatable; a no-op when the
+   * history is already empty.
+   */
+  private rewindConversation(): void {
+    if (this.conversationHistory[this.conversationHistory.length - 1]?.role === 'assistant') {
+      this.conversationHistory.pop();
+    }
+    if (this.conversationHistory[this.conversationHistory.length - 1]?.role === 'user') {
+      this.conversationHistory.pop();
     }
   }
 

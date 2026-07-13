@@ -250,11 +250,21 @@ export class BackendService {
     workspace_path?: string;
     thinking?: boolean;
     effort?: string;
+    images?: { name: string; mime: string; dataBase64: string }[];
+    mode?: 'manual' | 'auto' | 'edit' | 'plan';
+    autoFallback?: boolean;
   }): AsyncGenerator<string | ForgeStreamEvent> {
+    const { images, mode, autoFallback, ...rest } = payload;
+    const body = {
+      ...rest,
+      images: images?.map(img => ({ name: img.name, mime: img.mime, data_base64: img.dataBase64 })),
+      mode,
+      auto_fallback: autoFallback,
+    };
     const res = await fetch(`${BASE_URL}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(body),
     });
 
     if (!res.ok) throw new Error(`Chat API error: ${res.status}`);

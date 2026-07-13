@@ -18,6 +18,12 @@ export type WebviewToExtension =
       modelId?: string;
       thinking?: boolean;
       effort?: string;
+      images?: { name: string; mime: string; dataBase64: string }[];
+      mode?: 'manual' | 'auto' | 'edit' | 'plan';
+      autoFallback?: boolean;
+    }
+  | {
+      type: 'REWIND';
     }
   | {
       type: 'APPROVAL_RESPONSE';
