@@ -1,6 +1,6 @@
 // webview-src/chat/App.tsx
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ConversationItem, Effort, LiveStatus, ModelInfo, TextItem, ToolItem } from './types';
+import { ConversationItem, Effort, LiveStatus, Mode, ModelInfo, TextItem, ToolItem, UsageDetails } from './types';
 import MessageList from './MessageList';
 import InputBar from './InputBar';
 
@@ -25,6 +25,9 @@ export default function App() {
   const [activeModelId, setActiveModelId] = useState<string | null>(null);
   const [thinking, setThinking] = useState(false);
   const [effort, setEffort] = useState<Effort>('medium');
+  const [mode, setMode] = useState<Mode>('manual');
+  const [autoFallback, setAutoFallback] = useState(true);
+  const [usage, setUsage] = useState<UsageDetails | null>(null);
 
   // Live activity, used to derive the StatusLine label. `statusLabel` tracks
   // the latest 'status' event; `activeTool` tracks a tool_call that hasn't
@@ -125,6 +128,10 @@ export default function App() {
           setModels(msg.models);
           setActiveModelId(prev => prev ?? msg.models[0]?.id ?? null);
           break;
+
+        case 'USAGE_DETAILS':
+          setUsage({ todayTokens: msg.todayTokens, todayUsd: msg.todayUsd, byModel: msg.byModel });
+          break;
       }
     };
 
@@ -148,14 +155,40 @@ export default function App() {
         modelId: activeModelId ?? undefined,
         thinking,
         effort,
+        mode,
+        autoFallback,
       });
     },
-    [activeModelId, thinking, effort]
+    [activeModelId, thinking, effort, mode, autoFallback]
   );
 
   const handleModelChange = useCallback((id: string) => {
     setActiveModelId(id);
     vscode.postMessage({ type: 'SET_MODEL', modelId: id });
+  }, []);
+
+  const clearConversation = useCallback(() => {
+    setItems([]);
+    vscode.postMessage({ type: 'CLEAR_CONVERSATION' });
+  }, []);
+
+  const rewind = useCallback(() => {
+    vscode.postMessage({ type: 'REWIND' });
+    setItems(prev => {
+      let cutoff = -1;
+      for (let i = prev.length - 1; i >= 0; i--) {
+        const it = prev[i];
+        if (it.kind === 'text' && it.role === 'user') {
+          cutoff = i;
+          break;
+        }
+      }
+      return cutoff === -1 ? prev : prev.slice(0, cutoff);
+    });
+  }, []);
+
+  const requestUsage = useCallback(() => {
+    vscode.postMessage({ type: 'REQUEST_USAGE' });
   }, []);
 
   const respondToApproval = useCallback((id: string, decision: 'allow' | 'deny' | 'other', detail?: string) => {
@@ -203,12 +236,22 @@ export default function App() {
         onThinkingChange={setThinking}
         effort={effort}
         onEffortChange={setEffort}
+        mode={mode}
+        onModeChange={setMode}
+        autoFallback={autoFallback}
+        onAutoFallbackChange={setAutoFallback}
         models={models}
         activeModelId={activeModelId}
         onModelChange={handleModelChange}
         tokenCount={tokenCount}
         costUsd={costUsd}
         onSend={sendMessage}
+        onClearConversation={clearConversation}
+        onRewind={rewind}
+        usage={usage}
+        onRequestUsage={requestUsage}
+        onOpenAttach={() => {}}
+        onOpenMention={() => {}}
       />
     </div>
   );

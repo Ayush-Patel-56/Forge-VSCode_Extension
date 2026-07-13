@@ -2,7 +2,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ModelInfo } from './types';
 
-export default function ModelSelect({
+function ModelList({
   models,
   activeModelId,
   onSelect,
@@ -11,12 +11,71 @@ export default function ModelSelect({
   activeModelId: string | null;
   onSelect: (id: string) => void;
 }) {
+  return (
+    <>
+      {models.length === 0 && (
+        <div style={{ padding: '8px 10px', fontSize: 12, color: 'var(--vscode-descriptionForeground)' }}>
+          No models available
+        </div>
+      )}
+      {models.map(m => (
+        <div
+          key={m.id}
+          onClick={() => onSelect(m.id)}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 8,
+            padding: '6px 10px',
+            fontSize: 12,
+            cursor: 'pointer',
+            background: m.id === activeModelId ? 'var(--vscode-list-activeSelectionBackground)' : 'transparent',
+            color: m.id === activeModelId ? 'var(--vscode-list-activeSelectionForeground)' : 'var(--vscode-foreground)',
+          }}
+        >
+          <span>{m.display_name}</span>
+          {m.is_free && (
+            <span
+              style={{
+                fontSize: 10,
+                padding: '1px 6px',
+                borderRadius: 8,
+                background: 'var(--vscode-badge-background)',
+                color: 'var(--vscode-badge-foreground)',
+              }}
+            >
+              free
+            </span>
+          )}
+        </div>
+      ))}
+    </>
+  );
+}
+
+export default function ModelSelect({
+  models,
+  activeModelId,
+  onSelect,
+  inline,
+}: {
+  models: ModelInfo[];
+  activeModelId: string | null;
+  onSelect: (id: string) => void;
+  /**
+   * Render just the selectable list, with no trigger button and no absolute
+   * positioning — used to embed this same picker inside the actions palette's
+   * "Switch model…" sub-view instead of duplicating the list markup.
+   */
+  inline?: boolean;
+}) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
   // Close the popup on outside click.
   useEffect(() => {
-    if (!open) return;
+    if (!open || inline) return;
     const onDocMouseDown = (e: MouseEvent) => {
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
         setOpen(false);
@@ -24,7 +83,15 @@ export default function ModelSelect({
     };
     document.addEventListener('mousedown', onDocMouseDown);
     return () => document.removeEventListener('mousedown', onDocMouseDown);
-  }, [open]);
+  }, [open, inline]);
+
+  if (inline) {
+    return (
+      <div style={{ maxHeight: 260, overflowY: 'auto' }}>
+        <ModelList models={models} activeModelId={activeModelId} onSelect={onSelect} />
+      </div>
+    );
+  }
 
   const active = models.find(m => m.id === activeModelId);
   const shortName = active?.display_name ?? activeModelId ?? 'model';
@@ -67,46 +134,14 @@ export default function ModelSelect({
             zIndex: 10,
           }}
         >
-          {models.length === 0 && (
-            <div style={{ padding: '8px 10px', fontSize: 12, color: 'var(--vscode-descriptionForeground)' }}>
-              No models available
-            </div>
-          )}
-          {models.map(m => (
-            <div
-              key={m.id}
-              onClick={() => {
-                onSelect(m.id);
-                setOpen(false);
-              }}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: 8,
-                padding: '6px 10px',
-                fontSize: 12,
-                cursor: 'pointer',
-                background: m.id === activeModelId ? 'var(--vscode-list-activeSelectionBackground)' : 'transparent',
-                color: m.id === activeModelId ? 'var(--vscode-list-activeSelectionForeground)' : 'var(--vscode-foreground)',
-              }}
-            >
-              <span>{m.display_name}</span>
-              {m.is_free && (
-                <span
-                  style={{
-                    fontSize: 10,
-                    padding: '1px 6px',
-                    borderRadius: 8,
-                    background: 'var(--vscode-badge-background)',
-                    color: 'var(--vscode-badge-foreground)',
-                  }}
-                >
-                  free
-                </span>
-              )}
-            </div>
-          ))}
+          <ModelList
+            models={models}
+            activeModelId={activeModelId}
+            onSelect={id => {
+              onSelect(id);
+              setOpen(false);
+            }}
+          />
         </div>
       )}
     </div>

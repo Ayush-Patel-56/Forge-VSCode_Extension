@@ -99,6 +99,17 @@ export class ChatPanel {
         this.statusBar?.setReady(msg.modelId);
         break;
       }
+
+      case 'REQUEST_USAGE': {
+        const usage = await this.backend.getUsage();
+        this.post<ExtensionToWebview>({
+          type: 'USAGE_DETAILS',
+          todayTokens: usage.today_tokens,
+          todayUsd: usage.today_usd,
+          byModel: usage.by_model ?? [],
+        });
+        break;
+      }
     }
   }
 

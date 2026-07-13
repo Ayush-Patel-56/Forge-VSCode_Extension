@@ -63,6 +63,9 @@ export type WebviewToExtension =
     }
   | {
       type: 'REQUEST_MCP_LIST';
+    }
+  | {
+      type: 'REQUEST_USAGE';
     };
 
 // --- Extension Host -> Renderer ---------------------------------------------
@@ -116,4 +119,10 @@ export type ExtensionToWebview =
   | {
       type: 'MCP_LIST';
       mcps: { id: string; display_name: string; status: string }[];
+    }
+  | {
+      type: 'USAGE_DETAILS';
+      todayTokens: number;
+      todayUsd: number;
+      byModel: { model_id: string; tokens_in: number; tokens_out: number; cost_usd: number }[];
     };

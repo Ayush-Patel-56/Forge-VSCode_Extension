@@ -40,7 +40,22 @@ export interface ModelInfo {
 
 export type Effort = 'low' | 'medium' | 'high' | 'max';
 
+export type Mode = 'manual' | 'auto' | 'edit' | 'plan';
+
 export interface LiveStatus {
   label: string;
   startedAt: number;
+}
+
+export interface UsageByModel {
+  model_id: string;
+  tokens_in: number;
+  tokens_out: number;
+  cost_usd: number;
+}
+
+export interface UsageDetails {
+  todayTokens: number;
+  todayUsd: number;
+  byModel: UsageByModel[];
 }
