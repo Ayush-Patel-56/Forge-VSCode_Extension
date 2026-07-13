@@ -14,7 +14,9 @@ from schemas import (
     ApprovalRequest, ChatRequest, CompleteRequest, IndexRequest,
     MCPInstallRequest, MCPStartRequest, ProviderRequest, SettingsPatch
 )
-from tools.approvals import resolve_approval, run_terminal_with_approval
+from tools.approvals import request_approval, resolve_approval, run_terminal_with_approval
+from tools.policy import PLAN_MODE_SYSTEM_MESSAGE, filter_read_only_tools, requires_approval
+from tools.terminal import run_command
 
 model_router = ModelRouter()
 context_engine = ContextEngine()
@@ -111,25 +113,64 @@ TERMINAL_TOOL = {
 }
 
 
-def _build_tools_provider(workspace_path: str):
-    """Builds a per-request tools_provider for model_router.stream(). Always
-    exposes the built-in approval-gated terminal__run_command tool, alongside
-    whatever MCP tools are currently running. Returns a 3-tuple
-    (openai_tools, executor, event_queue) -- the event_queue lets the terminal
-    tool's approval flow push an approval_request event into the SSE stream
-    while stream() is mid-iteration (see ModelRouter._drain_queue_while)."""
+def _render_mcp_call(raw_name: str, arguments: dict) -> str:
+    """Human-readable rendering of an MCP tool call for the approval prompt,
+    e.g. 'filesystem.edit_file {path: foo.py}' -- the UI renders the
+    approval_request event's 'command' field verbatim."""
+    server, _, tool_name = raw_name.partition('__')
+    display = f'{server}.{tool_name}' if tool_name else raw_name
+    if not arguments:
+        return display
+    args_str = ', '.join(f'{k}: {v}' for k, v in arguments.items())
+    return f'{display} {{{args_str}}}'
+
+
+def _build_tools_provider(workspace_path: str, mode: str = 'manual'):
+    """Builds a per-request tools_provider for model_router.stream(). Exposes
+    the built-in terminal__run_command tool (dropped entirely in plan mode)
+    alongside whatever MCP tools are currently running (restricted to
+    read-only tools in plan mode). Returns a 3-tuple (openai_tools, executor,
+    event_queue) -- the event_queue lets a gated tool call's approval flow
+    push an approval_request event into the SSE stream while stream() is
+    mid-iteration (see ModelRouter._drain_queue_while).
+
+    Approval gating is mode-driven (tools/policy.py::requires_approval):
+    'manual' gates every tool call exactly like before; 'auto'/'edit'/'plan'
+    skip the interactive approval_request round-trip for tool calls the
+    policy considers safe, but still emit tool_call/tool_result events."""
     def provider():
         mcp_result = _mcp_tools_provider()
         mcp_tools, mcp_executor = mcp_result if mcp_result else ([], None)
 
-        openai_tools = list(mcp_tools) + [TERMINAL_TOOL]
+        if mode == 'plan':
+            openai_tools = filter_read_only_tools(list(mcp_tools))
+        else:
+            openai_tools = list(mcp_tools) + [TERMINAL_TOOL]
+
         event_queue: asyncio.Queue = asyncio.Queue()
 
         async def executor(raw_name: str, arguments: dict):
             if raw_name == 'terminal__run_command':
-                return await run_terminal_with_approval(event_queue, workspace_path, arguments)
+                command = (arguments or {}).get('command') or ''
+                cwd = (arguments or {}).get('cwd') or workspace_path or '.'
+                if not command.strip():
+                    return {'text': 'No command was provided.'}
+                if requires_approval(mode, 'terminal', command=command):
+                    return await run_terminal_with_approval(event_queue, workspace_path, arguments)
+                result = await run_command(command, cwd)
+                return {'text': f"exit_code={result['exit_code']}\n{result['output']}"}
+
             if mcp_executor is not None:
+                if requires_approval(mode, 'mcp', tool_name=raw_name):
+                    rendered = _render_mcp_call(raw_name, arguments or {})
+                    decision, detail = await request_approval(event_queue, rendered, workspace_path)
+                    if decision == 'allow':
+                        return await mcp_executor(raw_name, arguments)
+                    if decision == 'other':
+                        return {'text': f'User did not run the tool and says: {detail or ""}'}
+                    return {'text': 'User declined to run this tool.'}
                 return await mcp_executor(raw_name, arguments)
+
             return {'error': f'Unknown tool: {raw_name}'}
 
         return openai_tools, executor, event_queue
@@ -141,6 +182,7 @@ def _build_tools_provider(workspace_path: str):
 async def chat(body: ChatRequest):
     messages = [m.model_dump() for m in body.messages]
     workspace_path = body.workspace_path or os.getcwd()
+    mode = body.mode or 'manual'
 
     # Convert the last user message's content into the OpenAI multimodal
     # array form when images are attached: [{'type':'text',...}, {'type':
@@ -159,10 +201,13 @@ async def chat(body: ChatRequest):
                 m['content'] = content_parts
                 break
 
+    if mode == 'plan':
+        messages = messages + [{'role': 'system', 'content': PLAN_MODE_SYSTEM_MESSAGE}]
+
     async def generate():
         async for chunk in model_router.stream(
             messages, body.model_id, body.context_chunks or [],
-            tools_provider=_build_tools_provider(workspace_path),
+            tools_provider=_build_tools_provider(workspace_path, mode),
             thinking=body.thinking or False,
             effort=body.effort or 'medium',
             has_images=bool(body.images),

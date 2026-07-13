@@ -44,6 +44,7 @@ from tools import approvals as approvals_mod  # noqa: E402
 from tools.approvals import (  # noqa: E402
     request_approval, resolve_approval, run_terminal_with_approval,
 )
+from tools.policy import requires_approval  # noqa: E402
 from router.model_router import ModelRouter  # noqa: E402
 
 
@@ -657,6 +658,139 @@ async def run_vision_routing_test() -> bool:
     return ok
 
 
+# ---------------------------------------------------------------------------
+# Part 5: gated MCP tool calls under mode-driven approval policy
+# ---------------------------------------------------------------------------
+
+def _mcp_gated_tools_provider(mode: str, tool_name: str, fake_mcp_executor):
+    """Mirrors main.py's _build_tools_provider() MCP-gating branch (see
+    tools/policy.py::requires_approval + tools/approvals.py::request_approval)
+    without importing main.py."""
+    def provider():
+        q: asyncio.Queue = asyncio.Queue()
+        tool_def = {
+            'type': 'function',
+            'function': {
+                'name': tool_name,
+                'description': 'a fake mcp tool for testing',
+                'parameters': {'type': 'object', 'properties': {}},
+            },
+        }
+
+        async def executor(raw_name: str, arguments: dict):
+            if requires_approval(mode, 'mcp', tool_name=raw_name):
+                decision, detail = await request_approval(q, f'rendered {raw_name}', '/workspace')
+                if decision == 'allow':
+                    return await fake_mcp_executor(raw_name, arguments)
+                if decision == 'other':
+                    return {'text': f'User did not run the tool and says: {detail or ""}'}
+                return {'text': 'User declined to run this tool.'}
+            return await fake_mcp_executor(raw_name, arguments)
+
+        return [tool_def], executor, q
+
+    return provider
+
+
+async def run_gated_mcp_approval_test() -> bool:
+    ok = True
+
+    executor_calls: list[tuple[str, dict]] = []
+
+    async def fake_mcp_executor(raw_name: str, arguments: dict):
+        executor_calls.append((raw_name, arguments))
+        return {'text': 'mcp tool result'}
+
+    # --- 5a: a write tool in auto mode is gated; 'deny' -> declined result
+    router = ModelRouter()
+    router._log_usage = lambda *args, **kwargs: None  # type: ignore[method-assign]
+
+    call_count = {'n': 0}
+
+    async def fake_create_write(**kwargs):
+        call_count['n'] += 1
+        if call_count['n'] == 1:
+            return _FakeChunkStream([
+                _chunk(tool_calls=[_tc_delta(0, id='call_1', name='filesystem__write_file')]),
+                _chunk(tool_calls=[_tc_delta(0, arguments='{}')]),
+            ])
+        return _FakeChunkStream([_chunk(content='done')])
+
+    fake_client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create_write)))
+    router._get_client = lambda provider: fake_client  # type: ignore[method-assign]
+
+    events = []
+    async for raw in router.stream(
+        messages=[{'role': 'user', 'content': 'write something to a file'}],
+        model_id=None,
+        context_chunks=[],
+        tools_provider=_mcp_gated_tools_provider('auto', 'filesystem__write_file', fake_mcp_executor),
+    ):
+        payload = json.loads(raw)
+        events.append(payload)
+        if payload.get('event') == 'approval_request':
+            resolve_approval(payload['id'], 'deny')
+
+    approval_events = [e for e in events if e.get('event') == 'approval_request']
+    if not approval_events:
+        print(f"FAIL: expected a write tool call in auto mode to surface an approval_request, got {events!r}")
+        ok = False
+    else:
+        print(f"PASS: write tool call in auto mode surfaced an approval_request: {approval_events[0]!r}")
+
+    tool_results = [e for e in events if e.get('event') == 'tool_result']
+    if not tool_results or 'declined' not in tool_results[0].get('text', '').lower():
+        print(f"FAIL: expected a declined-tool-call result after 'deny', got {tool_results!r}")
+        ok = False
+    else:
+        print(f"PASS: 'deny' decision produced a declined tool result: {tool_results[0]!r}")
+
+    if executor_calls:
+        print(f"FAIL: the mcp executor must not run when the approval was denied, got {executor_calls!r}")
+        ok = False
+    else:
+        print("PASS: mcp executor did not run after the tool call was denied")
+
+    # --- 5b: a read-only tool in auto mode is NOT gated -- no approval_request
+    call_count2 = {'n': 0}
+
+    async def fake_create_read(**kwargs):
+        call_count2['n'] += 1
+        if call_count2['n'] == 1:
+            return _FakeChunkStream([
+                _chunk(tool_calls=[_tc_delta(0, id='call_2', name='filesystem__read_file')]),
+                _chunk(tool_calls=[_tc_delta(0, arguments='{}')]),
+            ])
+        return _FakeChunkStream([_chunk(content='read done')])
+
+    fake_client2 = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create_read)))
+    router._get_client = lambda provider: fake_client2  # type: ignore[method-assign]
+
+    events2 = []
+    async for raw in router.stream(
+        messages=[{'role': 'user', 'content': 'read a file'}],
+        model_id=None,
+        context_chunks=[],
+        tools_provider=_mcp_gated_tools_provider('auto', 'filesystem__read_file', fake_mcp_executor),
+    ):
+        events2.append(json.loads(raw))
+
+    approval_events2 = [e for e in events2 if e.get('event') == 'approval_request']
+    if approval_events2:
+        print(f"FAIL: a read-only tool call in auto mode must not require approval, got {approval_events2!r}")
+        ok = False
+    else:
+        print("PASS: read-only tool call in auto mode surfaced no approval_request")
+
+    if ('filesystem__read_file', {}) not in executor_calls:
+        print(f"FAIL: expected the mcp executor to run directly for the read-only tool, got {executor_calls!r}")
+        ok = False
+    else:
+        print("PASS: mcp executor ran directly for the read-only tool (no approval round-trip)")
+
+    return ok
+
+
 def main() -> int:
     ok_terminal = asyncio.run(run_terminal_tests())
     ok_router_events = asyncio.run(run_router_typed_events_test())
@@ -664,10 +798,11 @@ def main() -> int:
     ok_tool_loop_fallback = asyncio.run(run_tool_loop_failure_fallback_test())
     ok_approval = asyncio.run(run_approval_flow_test())
     ok_vision_routing = asyncio.run(run_vision_routing_test())
+    ok_gated_mcp_approval = asyncio.run(run_gated_mcp_approval_test())
 
     ok = (
         ok_terminal and ok_router_events and ok_thinking_retry and ok_tool_loop_fallback
-        and ok_approval and ok_vision_routing
+        and ok_approval and ok_vision_routing and ok_gated_mcp_approval
     )
     if ok:
         print("PASS: all agent-engine assertions succeeded")

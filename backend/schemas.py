@@ -23,6 +23,7 @@ class ChatRequest(BaseModel):
     thinking: Optional[bool] = None
     effort: Optional[str] = None  # 'low' | 'medium' | 'high' | 'max'
     images: Optional[list[ImageAttachment]] = None
+    mode: Optional[str] = None  # 'manual' | 'auto' | 'edit' | 'plan' (default 'manual')
 
 
 class ApprovalRequest(BaseModel):
