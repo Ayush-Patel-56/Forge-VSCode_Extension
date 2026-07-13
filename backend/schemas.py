@@ -8,6 +8,12 @@ class ChatMessage(BaseModel):
     content: str
 
 
+class ImageAttachment(BaseModel):
+    name: str
+    mime: str
+    data_base64: str
+
+
 class ChatRequest(BaseModel):
     messages: list[ChatMessage]
     model_id: Optional[str] = None
@@ -16,6 +22,7 @@ class ChatRequest(BaseModel):
     workspace_path: Optional[str] = None
     thinking: Optional[bool] = None
     effort: Optional[str] = None  # 'low' | 'medium' | 'high' | 'max'
+    images: Optional[list[ImageAttachment]] = None
 
 
 class ApprovalRequest(BaseModel):

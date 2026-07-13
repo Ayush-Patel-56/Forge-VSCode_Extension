@@ -575,14 +575,100 @@ async def run_approval_flow_test() -> bool:
     return ok
 
 
+# ---------------------------------------------------------------------------
+# Part 4: vision candidate filtering (has_images routing)
+# ---------------------------------------------------------------------------
+
+async def run_vision_routing_test() -> bool:
+    """has_images=True must restrict candidates to vision-capable models
+    (querying db Models.supports_vision, cached on router._vision_models
+    exactly like _get_model_costs caches cost data -- tests set the cache
+    directly to avoid touching the db). A non-vision selected model_id must
+    be skipped in favor of a vision-capable candidate; if none exist at all,
+    stream() must yield a clear content error instead of trying (and 400ing
+    on) a non-vision model."""
+    ok = True
+
+    # --- 4a: non-vision selected model -> only vision candidates are tried
+    router = ModelRouter()
+    router._log_usage = lambda *args, **kwargs: None  # type: ignore[method-assign]
+    router._vision_models_loaded = True  # type: ignore[attr-defined]
+    router._vision_models = {'gemini/gemini-2.5-flash'}  # type: ignore[attr-defined]
+
+    models_tried = []
+
+    async def fake_create(**kwargs):
+        models_tried.append(kwargs.get('model'))
+        return _FakeStream(['ok'])
+
+    fake_client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create)))
+    router._get_client = lambda provider: fake_client  # type: ignore[method-assign]
+
+    events = []
+    async for raw in router.stream(
+        messages=[{'role': 'user', 'content': 'what is in this image?'}],
+        model_id='groq/llama-3.3-70b-versatile',  # explicitly selected, but NOT vision-capable
+        context_chunks=[],
+        has_images=True,
+    ):
+        events.append(json.loads(raw))
+
+    if models_tried != ['gemini-2.5-flash']:
+        print(f"FAIL: expected only the vision-capable model to be tried, got {models_tried!r}")
+        ok = False
+    else:
+        print(f"PASS: has_images=True skipped the non-vision selected model and tried only vision candidates: {models_tried!r}")
+
+    content = ''.join(e['content'] for e in events if 'content' in e)
+    if content != 'ok':
+        print(f"FAIL: expected the vision-capable candidate to stream 'ok', got {content!r}")
+        ok = False
+    else:
+        print("PASS: vision-capable candidate streamed the response")
+
+    # --- 4b: no vision-capable model at all -> clear content error --------
+    router2 = ModelRouter()
+    router2._log_usage = lambda *args, **kwargs: None  # type: ignore[method-assign]
+    router2._vision_models_loaded = True  # type: ignore[attr-defined]
+    router2._vision_models = set()  # type: ignore[attr-defined]
+
+    async def fake_create_should_not_run(**kwargs):
+        raise AssertionError('create() should never be called when no vision model is available')
+
+    fake_client2 = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create_should_not_run)))
+    router2._get_client = lambda provider: fake_client2  # type: ignore[method-assign]
+
+    events2 = []
+    async for raw in router2.stream(
+        messages=[{'role': 'user', 'content': 'what is in this image?'}],
+        model_id=None,
+        context_chunks=[],
+        has_images=True,
+    ):
+        events2.append(json.loads(raw))
+
+    content2 = ''.join(e['content'] for e in events2 if 'content' in e)
+    if 'vision' not in content2.lower():
+        print(f"FAIL: expected a clear vision-capability error, got {content2!r}")
+        ok = False
+    else:
+        print(f"PASS: no vision-capable model available produced a clear error: {content2!r}")
+
+    return ok
+
+
 def main() -> int:
     ok_terminal = asyncio.run(run_terminal_tests())
     ok_router_events = asyncio.run(run_router_typed_events_test())
     ok_thinking_retry = asyncio.run(run_thinking_retry_test())
     ok_tool_loop_fallback = asyncio.run(run_tool_loop_failure_fallback_test())
     ok_approval = asyncio.run(run_approval_flow_test())
+    ok_vision_routing = asyncio.run(run_vision_routing_test())
 
-    ok = ok_terminal and ok_router_events and ok_thinking_retry and ok_tool_loop_fallback and ok_approval
+    ok = (
+        ok_terminal and ok_router_events and ok_thinking_retry and ok_tool_loop_fallback
+        and ok_approval and ok_vision_routing
+    )
     if ok:
         print("PASS: all agent-engine assertions succeeded")
         return 0

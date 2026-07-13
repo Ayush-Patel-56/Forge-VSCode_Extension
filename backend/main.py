@@ -142,12 +142,30 @@ async def chat(body: ChatRequest):
     messages = [m.model_dump() for m in body.messages]
     workspace_path = body.workspace_path or os.getcwd()
 
+    # Convert the last user message's content into the OpenAI multimodal
+    # array form when images are attached: [{'type':'text',...}, {'type':
+    # 'image_url',...}, ...]. Only the LAST user message carries images --
+    # that's the one the user just attached them to.
+    if body.images:
+        for m in reversed(messages):
+            if m.get('role') == 'user':
+                original_text = m.get('content') or ''
+                content_parts: list = [{'type': 'text', 'text': original_text}]
+                for img in body.images:
+                    content_parts.append({
+                        'type': 'image_url',
+                        'image_url': {'url': f'data:{img.mime};base64,{img.data_base64}'},
+                    })
+                m['content'] = content_parts
+                break
+
     async def generate():
         async for chunk in model_router.stream(
             messages, body.model_id, body.context_chunks or [],
             tools_provider=_build_tools_provider(workspace_path),
             thinking=body.thinking or False,
             effort=body.effort or 'medium',
+            has_images=bool(body.images),
         ):
             yield f'data: {chunk}\n\n'
         yield 'data: [DONE]\n\n'

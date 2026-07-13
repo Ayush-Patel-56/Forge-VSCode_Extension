@@ -36,6 +36,8 @@ class ModelRouter:
         self._today_tokens = 0
         self._model_costs: dict[str, tuple[float, float]] = {}
         self._model_costs_loaded = False
+        self._vision_models: set[str] = set()
+        self._vision_models_loaded = False
         self._load_settings()
 
     def _load_settings(self):
@@ -69,6 +71,22 @@ class ModelRouter:
                 pass
         return self._model_costs.get(model_id, (0.0, 0.0))
 
+    def _get_vision_models(self) -> set[str]:
+        """Returns the set of model_ids with supports_vision=True, cached like
+        _get_model_costs. Tests may set self._vision_models_loaded = True and
+        self._vision_models directly to bypass the db query."""
+        if not self._vision_models_loaded:
+            try:
+                from db.models import Model
+                with get_session() as db:
+                    self._vision_models = {
+                        m.id for m in db.query(Model).filter_by(supports_vision=True).all()
+                    }
+                self._vision_models_loaded = True
+            except Exception:
+                pass
+        return self._vision_models
+
     def _get_client(self, provider: str) -> AsyncOpenAI:
         if provider not in self._clients:
             cfg = PROVIDER_CONFIGS[provider]
@@ -84,6 +102,20 @@ class ModelRouter:
     def _should_use_free_only(self) -> bool:
         if self._daily_budget_usd <= 0: return False
         return self._today_cost_usd >= self._daily_budget_usd * 0.9  # 90% threshold
+
+    @staticmethod
+    def _extract_text(content) -> str:
+        """Message content is normally a str, but main.py converts the last
+        user message into the OpenAI multimodal array form (text + image_url
+        parts) when images are attached. Extract just the text so task
+        classification and token-count estimation keep working either way."""
+        if isinstance(content, list):
+            return '\n'.join(
+                part.get('text') or ''
+                for part in content
+                if isinstance(part, dict) and part.get('type') == 'text'
+            )
+        return content or ''
 
     def _classify_task(self, text: str) -> str:
         text_lower = text.lower()
@@ -113,15 +145,30 @@ class ModelRouter:
     async def stream(
         self, messages: list, model_id: str | None, context_chunks: list[str], tools_provider=None,
         thinking: bool = False, effort: str = 'medium',
+        has_images: bool = False,
     ):
         if context_chunks:
             ctx = '\n\n'.join(f'```\n{c}\n```' for c in context_chunks)
             messages = [{'role': 'system', 'content': f'Relevant code from codebase:\n{ctx}'}] + messages
 
-        task_type = self._classify_task(messages[-1].get('content', '') if messages else '')
+        task_type = self._classify_task(self._extract_text(messages[-1].get('content', '')) if messages else '')
         candidates = self._get_candidates_with_default(task_type, model_id)
 
-        total_chars = sum(len(m.get('content', '') or '') for m in messages)
+        if has_images:
+            vision_models = self._get_vision_models()
+            vision_candidates = [c for c in candidates if c in vision_models]
+            if not vision_candidates:
+                # Task-profile chain may not include a vision model at all
+                # (e.g. selected model isn't vision-capable) -- fall back to
+                # trying every known vision-capable model directly rather
+                # than sending image content to a model that will 400 on it.
+                vision_candidates = list(vision_models)
+            if not vision_candidates:
+                yield f'{{"content": {json.dumps("Attach requires a vision-capable model — add a Gemini key")}}}'
+                return
+            candidates = vision_candidates
+
+        total_chars = sum(len(self._extract_text(m.get('content'))) for m in messages)
         tokens_in = total_chars // 4
 
         openai_tools = None
