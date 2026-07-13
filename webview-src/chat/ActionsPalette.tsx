@@ -65,8 +65,11 @@ export interface ActionsPaletteProps {
   autoFallback: boolean;
   onAutoFallbackChange: (v: boolean) => void;
   onOpenUsage: () => void;
-  onOpenAttach: () => void;
-  onOpenMention: () => void;
+  onAttachImage: () => void;
+  workspaceFiles: string[];
+  onRequestWorkspaceFiles: (query: string) => void;
+  onAttachFile: (relPath: string) => void;
+  onMentionFile: (relPath: string) => void;
 }
 
 export default function ActionsPalette({
@@ -83,12 +86,15 @@ export default function ActionsPalette({
   autoFallback,
   onAutoFallbackChange,
   onOpenUsage,
-  onOpenAttach,
-  onOpenMention,
+  onAttachImage,
+  workspaceFiles,
+  onRequestWorkspaceFiles,
+  onAttachFile,
+  onMentionFile,
 }: ActionsPaletteProps) {
   const [filter, setFilter] = useState('');
   const [highlighted, setHighlighted] = useState(0);
-  const [subview, setSubview] = useState<'root' | 'model'>('root');
+  const [subview, setSubview] = useState<'root' | 'model' | 'attach' | 'mention'>('root');
   const rootRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -109,17 +115,27 @@ export default function ActionsPalette({
   const actions: PaletteAction[] = useMemo(
     () => [
       {
+        id: 'attach-image',
+        section: 'Context',
+        label: 'Attach image…',
+        activate: () => {
+          onAttachImage();
+          onClose();
+        },
+        render: highlighted => <Row highlighted={highlighted} icon="🖼" label="Attach image…" />,
+      },
+      {
         id: 'attach-file',
         section: 'Context',
         label: 'Attach file…',
-        activate: onOpenAttach,
+        activate: () => setSubview('attach'),
         render: highlighted => <Row highlighted={highlighted} icon="📎" label="Attach file…" />,
       },
       {
         id: 'mention-file',
         section: 'Context',
         label: 'Mention file from this project…',
-        activate: onOpenMention,
+        activate: () => setSubview('mention'),
         render: highlighted => <Row highlighted={highlighted} icon="@" label="Mention file from this project…" />,
       },
       {
@@ -215,7 +231,7 @@ export default function ActionsPalette({
     ],
     [
       activeModelName, effort, thinking, autoFallback,
-      onOpenAttach, onOpenMention, onClearConversation, onRewind, onClose,
+      onAttachImage, onClearConversation, onRewind, onClose,
       onEffortChange, onThinkingChange, onAutoFallbackChange, onOpenUsage,
     ]
   );
@@ -228,6 +244,29 @@ export default function ActionsPalette({
   useEffect(() => {
     setHighlighted(0);
   }, [filter]);
+
+  if (subview === 'attach' || subview === 'mention') {
+    return (
+      <div ref={rootRef} style={paletteContainerStyle}>
+        <div
+          onClick={() => setSubview('root')}
+          style={{ padding: '8px 10px', fontSize: 11, color: 'var(--vscode-descriptionForeground)', cursor: 'pointer', borderBottom: '1px solid var(--vscode-panel-border)' }}
+        >
+          ← Back · {subview === 'attach' ? 'Attach file' : 'Mention file'}
+        </div>
+        <FilePicker
+          files={workspaceFiles}
+          onQueryChange={onRequestWorkspaceFiles}
+          onEscape={onClose}
+          onPick={relPath => {
+            if (subview === 'attach') onAttachFile(relPath);
+            else onMentionFile(relPath);
+            onClose();
+          }}
+        />
+      </div>
+    );
+  }
 
   if (subview === 'model') {
     return (
@@ -353,6 +392,110 @@ function Row({
       {right && <span style={{ fontSize: 10.5, color: 'var(--vscode-descriptionForeground)' }}>{right}</span>}
       {rightNode}
     </div>
+  );
+}
+
+/**
+ * Workspace file sub-list shared by "Attach file…" and "Mention file…":
+ * a filter input debounced ~200ms into REQUEST_WORKSPACE_FILES, with
+ * keyboard navigation over the returned relative paths. The debounce timer
+ * is cancelled on unmount.
+ */
+function FilePicker({
+  files,
+  onQueryChange,
+  onPick,
+  onEscape,
+}: {
+  files: string[];
+  onQueryChange: (query: string) => void;
+  onPick: (relPath: string) => void;
+  onEscape: () => void;
+}) {
+  const [query, setQuery] = useState('');
+  const [highlighted, setHighlighted] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  // Initial (unfiltered) listing on open; debounced re-query as the user
+  // types. One effect owns the timer so it is always cancelled on unmount.
+  useEffect(() => {
+    debounceRef.current = setTimeout(() => onQueryChange(query), 200);
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query]);
+
+  useEffect(() => {
+    setHighlighted(0);
+  }, [files]);
+
+  return (
+    <>
+      <input
+        ref={inputRef}
+        value={query}
+        onChange={e => setQuery(e.target.value)}
+        onKeyDown={e => {
+          if (e.key === 'Escape') {
+            e.preventDefault();
+            onEscape();
+          } else if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            setHighlighted(h => Math.min(h + 1, files.length - 1));
+          } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            setHighlighted(h => Math.max(h - 1, 0));
+          } else if (e.key === 'Enter') {
+            e.preventDefault();
+            const picked = files[highlighted];
+            if (picked) onPick(picked);
+          }
+        }}
+        placeholder="Filter files..."
+        style={{
+          width: '100%',
+          boxSizing: 'border-box',
+          background: 'var(--vscode-input-background)',
+          color: 'var(--vscode-input-foreground)',
+          border: 'none',
+          borderBottom: '1px solid var(--vscode-panel-border)',
+          padding: '8px 10px',
+          fontSize: 12,
+          fontFamily: 'inherit',
+          outline: 'none',
+        }}
+      />
+      <div style={{ maxHeight: 260, overflowY: 'auto' }}>
+        {files.length === 0 && (
+          <div style={{ padding: 10, fontSize: 12, color: 'var(--vscode-descriptionForeground)' }}>No matching files</div>
+        )}
+        {files.map((f, i) => (
+          <div
+            key={f}
+            onClick={() => onPick(f)}
+            onMouseEnter={() => setHighlighted(i)}
+            style={{
+              padding: '5px 10px',
+              fontSize: 11.5,
+              cursor: 'pointer',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              background: i === highlighted ? 'var(--vscode-list-hoverBackground)' : 'transparent',
+            }}
+            title={f}
+          >
+            {f}
+          </div>
+        ))}
+      </div>
+    </>
   );
 }
 

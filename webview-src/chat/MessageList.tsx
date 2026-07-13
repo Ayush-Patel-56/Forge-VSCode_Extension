@@ -9,8 +9,33 @@ import StatusLine from './StatusLine';
 
 const MONO_FONT = 'var(--vscode-editor-font-family), monospace';
 
+function AttachmentChip({ icon, label }: { icon: string; label: string }) {
+  return (
+    <span
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 4,
+        padding: '1px 8px',
+        borderRadius: 8,
+        border: '1px solid var(--vscode-panel-border)',
+        fontSize: 10.5,
+        color: 'var(--vscode-descriptionForeground)',
+        maxWidth: 200,
+        overflow: 'hidden',
+        whiteSpace: 'nowrap',
+      }}
+      title={label}
+    >
+      <span>{icon}</span>
+      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</span>
+    </span>
+  );
+}
+
 function TextBlock({ item }: { item: TextItem }) {
   if (item.role === 'user') {
+    const hasAttachments = (item.imageNames?.length ?? 0) + (item.attachedFiles?.length ?? 0) > 0;
     return (
       <div
         style={{
@@ -26,6 +51,12 @@ function TextBlock({ item }: { item: TextItem }) {
         }}
       >
         {item.content}
+        {hasAttachments && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 6 }}>
+            {item.imageNames?.map((n, i) => <AttachmentChip key={`img-${i}`} icon="🖼" label={n} />)}
+            {item.attachedFiles?.map(f => <AttachmentChip key={`file-${f}`} icon="🗎" label={f} />)}
+          </div>
+        )}
       </div>
     );
   }

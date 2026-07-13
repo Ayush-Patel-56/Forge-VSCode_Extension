@@ -1,6 +1,6 @@
 // webview-src/chat/App.tsx
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ConversationItem, Effort, LiveStatus, Mode, ModelInfo, TextItem, ToolItem, UsageDetails } from './types';
+import { ConversationItem, Effort, ImageAttachment, LiveStatus, Mode, ModelInfo, TextItem, ToolItem, UsageDetails } from './types';
 import MessageList from './MessageList';
 import InputBar from './InputBar';
 
@@ -28,6 +28,7 @@ export default function App() {
   const [mode, setMode] = useState<Mode>('manual');
   const [autoFallback, setAutoFallback] = useState(true);
   const [usage, setUsage] = useState<UsageDetails | null>(null);
+  const [workspaceFiles, setWorkspaceFiles] = useState<string[]>([]);
 
   // Live activity, used to derive the StatusLine label. `statusLabel` tracks
   // the latest 'status' event; `activeTool` tracks a tool_call that hasn't
@@ -132,6 +133,10 @@ export default function App() {
         case 'USAGE_DETAILS':
           setUsage({ todayTokens: msg.todayTokens, todayUsd: msg.todayUsd, byModel: msg.byModel });
           break;
+
+        case 'WORKSPACE_FILES':
+          setWorkspaceFiles(msg.files);
+          break;
       }
     };
 
@@ -144,10 +149,20 @@ export default function App() {
   }, [items]);
 
   const sendMessage = useCallback(
-    (content: string) => {
+    (content: string, images: ImageAttachment[], attachedFiles: string[]) => {
       setIsStreaming(true);
       setTurnStartedAt(Date.now());
-      setItems(prev => [...prev, { kind: 'text', id: crypto.randomUUID(), role: 'user', content }]);
+      setItems(prev => [
+        ...prev,
+        {
+          kind: 'text',
+          id: crypto.randomUUID(),
+          role: 'user',
+          content,
+          imageNames: images.length > 0 ? images.map(i => i.name) : undefined,
+          attachedFiles: attachedFiles.length > 0 ? attachedFiles : undefined,
+        },
+      ]);
       vscode.postMessage({
         type: 'SEND_MESSAGE',
         content,
@@ -157,6 +172,10 @@ export default function App() {
         effort,
         mode,
         autoFallback,
+        images: images.length > 0
+          ? images.map(i => ({ name: i.name, mime: i.mime, dataBase64: i.dataBase64 }))
+          : undefined,
+        attachedFiles: attachedFiles.length > 0 ? attachedFiles : undefined,
       });
     },
     [activeModelId, thinking, effort, mode, autoFallback]
@@ -189,6 +208,10 @@ export default function App() {
 
   const requestUsage = useCallback(() => {
     vscode.postMessage({ type: 'REQUEST_USAGE' });
+  }, []);
+
+  const requestWorkspaceFiles = useCallback((query: string) => {
+    vscode.postMessage({ type: 'REQUEST_WORKSPACE_FILES', query });
   }, []);
 
   const respondToApproval = useCallback((id: string, decision: 'allow' | 'deny' | 'other', detail?: string) => {
@@ -250,8 +273,8 @@ export default function App() {
         onRewind={rewind}
         usage={usage}
         onRequestUsage={requestUsage}
-        onOpenAttach={() => {}}
-        onOpenMention={() => {}}
+        workspaceFiles={workspaceFiles}
+        onRequestWorkspaceFiles={requestWorkspaceFiles}
       />
     </div>
   );

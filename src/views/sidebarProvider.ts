@@ -11,6 +11,7 @@ import { BackendService } from '../services/backendService';
 import { ContextService, ContextSnapshot } from '../services/contextService';
 import { StatusBarService } from '../services/statusBarService';
 import { WebviewToExtension, ExtensionToWebview } from '../types';
+import { findWorkspaceFiles, readAttachedFileSections } from '../utils/attachments';
 import * as path from 'path';
 
 export class SidebarProvider implements vscode.WebviewViewProvider {
@@ -44,7 +45,13 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
         this.conversationHistory.push({ role: 'user', content: msg.content });
 
-        const systemContent = this.buildSystemPrompt(snapshot);
+        // Explicitly attached files are appended to the system prompt for
+        // this turn only.
+        let systemContent = this.buildSystemPrompt(snapshot);
+        if (msg.attachedFiles && msg.attachedFiles.length > 0) {
+          const sections = await readAttachedFileSections(msg.attachedFiles);
+          if (sections.length > 0) systemContent += `\n${sections.join('\n')}`;
+        }
         const messages = [
           { role: 'system', content: systemContent },
           ...this.conversationHistory.slice(-20),
@@ -158,6 +165,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         });
         break;
       }
+
+      case 'REQUEST_WORKSPACE_FILES': {
+        const files = await findWorkspaceFiles(msg.query);
+        this.post<ExtensionToWebview>({ type: 'WORKSPACE_FILES', files });
+        break;
+      }
     }
   }
 
@@ -209,7 +222,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src ${webview.cspSource}; style-src ${webview.cspSource} 'unsafe-inline';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src ${webview.cspSource}; style-src ${webview.cspSource} 'unsafe-inline'; img-src ${webview.cspSource} data:;">
   <title>Forge Chat</title>
 </head>
 <body>

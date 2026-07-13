@@ -21,6 +21,7 @@ export type WebviewToExtension =
       images?: { name: string; mime: string; dataBase64: string }[];
       mode?: 'manual' | 'auto' | 'edit' | 'plan';
       autoFallback?: boolean;
+      attachedFiles?: string[];
     }
   | {
       type: 'REWIND';
@@ -66,6 +67,10 @@ export type WebviewToExtension =
     }
   | {
       type: 'REQUEST_USAGE';
+    }
+  | {
+      type: 'REQUEST_WORKSPACE_FILES';
+      query: string;
     };
 
 // --- Extension Host -> Renderer ---------------------------------------------
@@ -125,4 +130,8 @@ export type ExtensionToWebview =
       todayTokens: number;
       todayUsd: number;
       byModel: { model_id: string; tokens_in: number; tokens_out: number; cost_usd: number }[];
+    }
+  | {
+      type: 'WORKSPACE_FILES';
+      files: string[];
     };

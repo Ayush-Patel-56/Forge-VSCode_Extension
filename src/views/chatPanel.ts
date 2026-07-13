@@ -4,6 +4,7 @@ import { BackendService } from '../services/backendService';
 import { ContextService, ContextSnapshot } from '../services/contextService';
 import { StatusBarService } from '../services/statusBarService';
 import { WebviewToExtension, ExtensionToWebview } from '../types';
+import { findWorkspaceFiles, readAttachedFileSections } from '../utils/attachments';
 import * as path from 'path';
 
 export class ChatPanel {
@@ -54,7 +55,7 @@ export class ChatPanel {
       case 'SEND_MESSAGE': {
         await this.runChatTurn(
           msg.content, msg.conversationId, msg.modelId, msg.thinking, msg.effort,
-          msg.images, msg.mode, msg.autoFallback
+          msg.images, msg.mode, msg.autoFallback, msg.attachedFiles
         );
         break;
       }
@@ -110,6 +111,12 @@ export class ChatPanel {
         });
         break;
       }
+
+      case 'REQUEST_WORKSPACE_FILES': {
+        const files = await findWorkspaceFiles(msg.query);
+        this.post<ExtensionToWebview>({ type: 'WORKSPACE_FILES', files });
+        break;
+      }
     }
   }
 
@@ -150,7 +157,8 @@ export class ChatPanel {
     effort?: string,
     images?: { name: string; mime: string; dataBase64: string }[],
     mode?: 'manual' | 'auto' | 'edit' | 'plan',
-    autoFallback?: boolean
+    autoFallback?: boolean,
+    attachedFiles?: string[]
   ): Promise<void> {
     // Gather context
     const snapshot = await this.contextService.gatherContext(content);
@@ -158,8 +166,13 @@ export class ChatPanel {
     // Add to conversation history
     this.conversationHistory.push({ role: 'user', content });
 
-    // Build messages with context injection
-    const systemContent = this.buildSystemPrompt(snapshot);
+    // Build messages with context injection; explicitly attached files are
+    // appended to the system prompt for this turn only.
+    let systemContent = this.buildSystemPrompt(snapshot);
+    if (attachedFiles && attachedFiles.length > 0) {
+      const sections = await readAttachedFileSections(attachedFiles);
+      if (sections.length > 0) systemContent += `\n${sections.join('\n')}`;
+    }
     const messages = [
       { role: 'system', content: systemContent },
       ...this.conversationHistory.slice(-20), // keep last 20 turns
@@ -257,7 +270,7 @@ export class ChatPanel {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src ${this.panel.webview.cspSource}; style-src ${this.panel.webview.cspSource} 'unsafe-inline';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src ${this.panel.webview.cspSource}; style-src ${this.panel.webview.cspSource} 'unsafe-inline'; img-src ${this.panel.webview.cspSource} data:;">
   <title>Forge Chat</title>
 </head>
 <body>

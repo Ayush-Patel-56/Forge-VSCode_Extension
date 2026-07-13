@@ -11,6 +11,10 @@ export interface TextItem {
   role: 'user' | 'assistant';
   content: string;
   streaming?: boolean;
+  /** Names of images the user attached to this message (chips in transcript). */
+  imageNames?: string[];
+  /** Workspace-relative paths of files the user attached to this message. */
+  attachedFiles?: string[];
 }
 
 export interface ToolItem {
@@ -45,6 +49,15 @@ export type Mode = 'manual' | 'auto' | 'edit' | 'plan';
 export interface LiveStatus {
   label: string;
   startedAt: number;
+}
+
+export interface ImageAttachment {
+  name: string;
+  mime: string;
+  /** Raw base64 payload (data: URL prefix stripped). */
+  dataBase64: string;
+  width?: number;
+  height?: number;
 }
 
 export interface UsageByModel {
