@@ -74,6 +74,14 @@ export default function App() {
           const ev = msg.ev;
           if (ev.event === 'status') {
             setStatusLabel(ev.label);
+            // Record a dim milestone row in the transcript, skipping
+            // duplicates when the same status repeats back-to-back.
+            const label = ev.label === 'thinking' ? 'Thinking' : 'Responding';
+            setItems(prev => {
+              const last = prev[prev.length - 1];
+              if (last && last.kind === 'milestone' && last.label === label) return prev;
+              return [...prev, { kind: 'milestone', id: crypto.randomUUID(), label }];
+            });
           } else if (ev.event === 'tool_call') {
             const toolItem: ToolItem = { kind: 'tool', id: ev.id, name: ev.name, args: ev.args };
             setItems(prev => [...prev, toolItem]);

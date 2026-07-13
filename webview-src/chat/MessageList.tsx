@@ -2,7 +2,7 @@
 import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { ConversationItem, LiveStatus, TextItem } from './types';
+import { ConversationItem, LiveStatus, MilestoneItem, TextItem } from './types';
 import ToolBlock from './ToolBlock';
 import ApprovalCard from './ApprovalCard';
 import StatusLine from './StatusLine';
@@ -66,7 +66,7 @@ function TextBlock({ item }: { item: TextItem }) {
   if (!item.content) return null;
 
   return (
-    <div style={{ marginTop: 12, marginBottom: 12, color: 'var(--vscode-foreground)' }}>
+    <div className="forge-md" style={{ marginTop: 12, marginBottom: 12, color: 'var(--vscode-foreground)' }}>
       <ReactMarkdown
         components={{
           code({ className, children }) {
@@ -89,6 +89,28 @@ function TextBlock({ item }: { item: TextItem }) {
   );
 }
 
+/**
+ * Dim single-line status milestone ("● Thinking") retained in the transcript
+ * history, unlike the transient StatusLine at the bottom.
+ */
+function MilestoneRow({ item }: { item: MilestoneItem }) {
+  return (
+    <div
+      style={{
+        marginTop: 4,
+        marginBottom: 4,
+        fontSize: 11,
+        fontFamily: MONO_FONT,
+        color: 'var(--vscode-descriptionForeground)',
+        opacity: 0.8,
+      }}
+    >
+      <span style={{ fontSize: 8, marginRight: 6 }}>●</span>
+      {item.label}
+    </div>
+  );
+}
+
 export default function MessageList({
   items,
   liveStatus,
@@ -105,6 +127,7 @@ export default function MessageList({
       {items.map(item => {
         if (item.kind === 'text') return <TextBlock key={item.id} item={item} />;
         if (item.kind === 'tool') return <ToolBlock key={item.id} item={item} />;
+        if (item.kind === 'milestone') return <MilestoneRow key={item.id} item={item} />;
         return <ApprovalCard key={item.id} item={item} onRespond={onRespondApproval} />;
       })}
       {liveStatus && <StatusLine label={liveStatus.label} startedAt={liveStatus.startedAt} />}

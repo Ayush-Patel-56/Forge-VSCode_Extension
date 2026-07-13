@@ -34,7 +34,18 @@ export interface ApprovalItem {
   detail?: string;
 }
 
-export type ConversationItem = TextItem | ToolItem | ApprovalItem;
+/**
+ * A dim, single-line milestone marker retained in transcript history for a
+ * status transition (e.g. "Thinking" / "Responding"). Distinct from the live
+ * StatusLine, which is transient and disappears once the turn settles.
+ */
+export interface MilestoneItem {
+  kind: 'milestone';
+  id: string;
+  label: string;
+}
+
+export type ConversationItem = TextItem | ToolItem | ApprovalItem | MilestoneItem;
 
 export interface ModelInfo {
   id: string;

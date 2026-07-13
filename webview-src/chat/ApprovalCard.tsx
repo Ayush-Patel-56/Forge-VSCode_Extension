@@ -13,15 +13,29 @@ export default function ApprovalCard({
 }) {
   const [draft, setDraft] = useState('');
 
+  // Collapsed record once decided: dim single line styled like the status
+  // milestone rows ("● approved · $ git pull").
   if (item.decision) {
     const label =
       item.decision === 'allow'
         ? `approved · $ ${item.command}`
         : item.decision === 'deny'
-          ? 'skipped'
+          ? `skipped · $ ${item.command}`
           : `redirected: ${item.detail ?? ''}`;
     return (
-      <div style={{ marginTop: 8, marginBottom: 8, fontSize: 12, fontFamily: MONO_FONT, color: 'var(--vscode-descriptionForeground)' }}>
+      <div
+        style={{
+          marginTop: 4,
+          marginBottom: 4,
+          fontSize: 11,
+          fontFamily: MONO_FONT,
+          color: 'var(--vscode-descriptionForeground)',
+          opacity: 0.8,
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-all',
+        }}
+      >
+        <span style={{ fontSize: 8, marginRight: 6 }}>●</span>
         {label}
       </div>
     );
