@@ -22,7 +22,10 @@ HASH_SAVE_EVERY_N_FILES = 25
 
 HASH_CACHE_PATH = Path.home() / '.forge' / 'index_hashes.json'
 
-chroma_client = chromadb.PersistentClient(path=str(Path.home() / '.forge' / 'chroma'))
+chroma_client = chromadb.PersistentClient(
+    path=str(Path.home() / '.forge' / 'chroma'),
+    settings=chromadb.Settings(anonymized_telemetry=False),
+)
 embedder = SentenceTransformer('nomic-ai/nomic-embed-text-v1.5', trust_remote_code=True)
 
 
@@ -36,6 +39,9 @@ class ContextEngine:
         if self._collection.count() == 0:
             self._indexed_hashes = {}  # vector store was wiped; cache is stale
         self._loop: asyncio.AbstractEventLoop | None = None
+        # Editors fire several save events per write; serialize re-index jobs
+        # so concurrent runs for the same file can't race on delete+add
+        self._index_lock = asyncio.Lock()
 
     @staticmethod
     def _load_hash_cache() -> dict[str, str]:
@@ -93,7 +99,8 @@ class ContextEngine:
 
     async def _index_file(self, filepath: str):
         # Embedding is CPU-bound; keep it off the event loop so the API stays responsive
-        await asyncio.to_thread(self._index_file_sync, filepath)
+        async with self._index_lock:
+            await asyncio.to_thread(self._index_file_sync, filepath)
 
     def _index_file_sync(self, filepath: str):
         try:
@@ -119,7 +126,7 @@ class ContextEngine:
         texts = [c['content'] for c in chunks]
         embeddings = embedder.encode(texts, batch_size=32, show_progress_bar=False).tolist()
 
-        self._collection.add(
+        self._collection.upsert(
             ids=[f'{filepath}:{c["start_line"]}' for c in chunks],
             embeddings=embeddings,
             documents=texts,

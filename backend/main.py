@@ -100,7 +100,7 @@ TERMINAL_TOOL = {
     'type': 'function',
     'function': {
         'name': 'terminal__run_command',
-        'description': "Run a shell command in the user's workspace (git, build tools, etc.). The user must approve each command.",
+        'description': "Run a shell command in the user's workspace (git, build tools, scripts). Risky commands require user approval. For creating or modifying files, PREFER the filesystem tools (write_file/edit_file) over shell commands.",
         'parameters': {
             'type': 'object',
             'properties': {

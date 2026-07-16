@@ -46,27 +46,30 @@ def run_matrix_test() -> bool:
     check("manual gates terminal 'git status'",
           requires_approval('manual', 'terminal', command='git status'), True)
 
-    # --- auto: read-only mcp + safe commands pass; writes/risky gated -----
+    # --- auto: read-only mcp + file writes + safe commands pass; risky
+    # terminal commands gated ------------------------------------------------
     check("auto passes mcp read_file",
           requires_approval('auto', 'mcp', tool_name='filesystem__read_file'), False)
     check("auto passes terminal 'git status'",
           requires_approval('auto', 'terminal', command='git status'), False)
-    check("auto gates mcp write_file",
-          requires_approval('auto', 'mcp', tool_name='filesystem__write_file'), True)
+    check("auto passes mcp write_file (workspace edits are trusted)",
+          requires_approval('auto', 'mcp', tool_name='filesystem__write_file'), False)
+    check("auto passes mcp edit_file",
+          requires_approval('auto', 'mcp', tool_name='filesystem__edit_file'), False)
     check("auto gates terminal 'git push'",
           requires_approval('auto', 'terminal', command='git push'), True)
     check("auto gates terminal 'rm -rf x'",
           requires_approval('auto', 'terminal', command='rm -rf x'), True)
 
-    # --- edit: also passes filesystem write tools; terminal still per auto
+    # --- edit: file edits pass; EVERY terminal command gated ---------------
     check("edit passes mcp write_file",
           requires_approval('edit', 'mcp', tool_name='filesystem__write_file'), False)
     check("edit passes mcp edit_file",
           requires_approval('edit', 'mcp', tool_name='filesystem__edit_file'), False)
-    check("edit still gates terminal 'git push'",
+    check("edit gates terminal 'git push'",
           requires_approval('edit', 'terminal', command='git push'), True)
-    check("edit passes terminal 'git status' (per auto rules)",
-          requires_approval('edit', 'terminal', command='git status'), False)
+    check("edit gates terminal 'git status' (edit trusts edits, not the shell)",
+          requires_approval('edit', 'terminal', command='git status'), True)
 
     # --- conservative fallback: unknown read_-prefixed tool passes in auto
     check("auto passes unknown 'someserver__read_something'",

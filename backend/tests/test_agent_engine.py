@@ -701,7 +701,10 @@ async def run_gated_mcp_approval_test() -> bool:
         executor_calls.append((raw_name, arguments))
         return {'text': 'mcp tool result'}
 
-    # --- 5a: a write tool in auto mode is gated; 'deny' -> declined result
+    # --- 5a: an unknown mutating tool in auto mode is gated; 'deny' ->
+    # declined result. (Workspace file-edit tools like write_file are trusted
+    # in auto mode since the policy realignment; memory__create_entities is
+    # neither read-only nor a filesystem write tool, so it stays gated.)
     router = ModelRouter()
     router._log_usage = lambda *args, **kwargs: None  # type: ignore[method-assign]
 
@@ -711,7 +714,7 @@ async def run_gated_mcp_approval_test() -> bool:
         call_count['n'] += 1
         if call_count['n'] == 1:
             return _FakeChunkStream([
-                _chunk(tool_calls=[_tc_delta(0, id='call_1', name='filesystem__write_file')]),
+                _chunk(tool_calls=[_tc_delta(0, id='call_1', name='memory__create_entities')]),
                 _chunk(tool_calls=[_tc_delta(0, arguments='{}')]),
             ])
         return _FakeChunkStream([_chunk(content='done')])
@@ -724,7 +727,7 @@ async def run_gated_mcp_approval_test() -> bool:
         messages=[{'role': 'user', 'content': 'write something to a file'}],
         model_id=None,
         context_chunks=[],
-        tools_provider=_mcp_gated_tools_provider('auto', 'filesystem__write_file', fake_mcp_executor),
+        tools_provider=_mcp_gated_tools_provider('auto', 'memory__create_entities', fake_mcp_executor),
     ):
         payload = json.loads(raw)
         events.append(payload)
@@ -733,10 +736,10 @@ async def run_gated_mcp_approval_test() -> bool:
 
     approval_events = [e for e in events if e.get('event') == 'approval_request']
     if not approval_events:
-        print(f"FAIL: expected a write tool call in auto mode to surface an approval_request, got {events!r}")
+        print(f"FAIL: expected a gated mutating tool call in auto mode to surface an approval_request, got {events!r}")
         ok = False
     else:
-        print(f"PASS: write tool call in auto mode surfaced an approval_request: {approval_events[0]!r}")
+        print(f"PASS: gated mutating tool call in auto mode surfaced an approval_request: {approval_events[0]!r}")
 
     tool_results = [e for e in events if e.get('event') == 'tool_result']
     if not tool_results or 'declined' not in tool_results[0].get('text', '').lower():

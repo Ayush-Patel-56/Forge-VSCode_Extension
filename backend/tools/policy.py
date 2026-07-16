@@ -9,11 +9,12 @@ gets gated unless it matches a conservative safe-command allowlist.
 
 Modes:
   manual -> always gate everything (today's behavior, unchanged).
-  auto   -> skip approval for read-only MCP tools and SAFE_COMMAND_RE
-            terminal commands; gate everything else.
-  edit   -> like auto, but also skip approval for filesystem write tools
-            (write_file, edit_file, create_directory, move_file). Terminal
-            commands still follow the auto rules.
+  auto   -> most permissive: read-only MCP tools, filesystem write tools
+            (workspace file edits), and SAFE_COMMAND_RE terminal commands run
+            without approval; only risky terminal commands are gated.
+  edit   -> file edits run without approval (read-only + write MCP tools),
+            but EVERY terminal command is gated -- "edit automatically"
+            trusts edits, not the shell.
   plan   -> like auto for approval purposes, but main.py additionally filters
             the offered MCP tool set down to read-only tools and drops the
             terminal tool entirely, so risky tools are never reachable in the
@@ -78,12 +79,14 @@ def requires_approval(mode: str | None, tool_kind: str, tool_name: str = '', com
         return True
 
     if tool_kind == 'terminal':
+        if mode == 'edit':
+            return True  # 'edit automatically' trusts file edits, not the shell
         return not is_safe_command(command)
 
     # tool_kind == 'mcp'
     if is_read_only_tool(tool_name):
         return False
-    if mode == 'edit' and is_write_tool(tool_name):
+    if mode in ('auto', 'edit') and is_write_tool(tool_name):
         return False
     return True
 
