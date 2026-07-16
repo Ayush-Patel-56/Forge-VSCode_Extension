@@ -18,6 +18,7 @@
       { "command": "forge.index.workspace", "title": "Forge: Index workspace" },
       { "command": "forge.explain.repo",    "title": "Forge: Explain this repo" },
       { "command": "forge.add.provider",    "title": "Forge: Add AI provider",     "icon": "$(key)" },
+      { "command": "forge.add.custom.model", "title": "Forge: Add custom model (paste snippet or URL)" },
       { "command": "forge.set.model",       "title": "Forge: Switch model" }
     ],
     "viewsContainers": {

@@ -57,6 +57,16 @@ class MCPStartRequest(BaseModel):
 class ProviderRequest(BaseModel):
     provider_id: str
     api_key: str
+    base_url: Optional[str] = None
+
+
+class AddModelRequest(BaseModel):
+    provider_id: str
+    model_id: str
+    display_name: Optional[str] = None
+    base_url: Optional[str] = None
+    is_free: Optional[bool] = False
+    context_window: Optional[int] = 8192
 
 
 class SettingsPatch(BaseModel):

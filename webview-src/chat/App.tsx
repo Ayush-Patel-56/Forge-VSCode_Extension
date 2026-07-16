@@ -283,6 +283,7 @@ export default function App() {
         onRequestUsage={requestUsage}
         workspaceFiles={workspaceFiles}
         onRequestWorkspaceFiles={requestWorkspaceFiles}
+        onRequestModels={() => vscode.postMessage({ type: 'REQUEST_MODELS' })}
       />
     </div>
   );

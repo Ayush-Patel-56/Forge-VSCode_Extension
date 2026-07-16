@@ -59,6 +59,7 @@ export default function ModelSelect({
   activeModelId,
   onSelect,
   inline,
+  onOpen,
 }: {
   models: ModelInfo[];
   activeModelId: string | null;
@@ -69,6 +70,13 @@ export default function ModelSelect({
    * "Switch model…" sub-view instead of duplicating the list markup.
    */
   inline?: boolean;
+  /**
+   * Called every time the model picker becomes visible (dropdown opened, or
+   * the inline list is mounted) so the caller can re-fetch the model list --
+   * models added via "Forge: Add custom model" while the webview is already
+   * open would otherwise never appear without a full reload.
+   */
+  onOpen?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -85,6 +93,14 @@ export default function ModelSelect({
     return () => document.removeEventListener('mousedown', onDocMouseDown);
   }, [open, inline]);
 
+  // Inline usage (actions palette "Switch model…" sub-view) is freshly
+  // mounted each time the user navigates into it, so a mount-only effect is
+  // equivalent to "every time opened" for that case.
+  useEffect(() => {
+    if (inline) onOpen?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inline]);
+
   if (inline) {
     return (
       <div style={{ maxHeight: 260, overflowY: 'auto' }}>
@@ -99,7 +115,11 @@ export default function ModelSelect({
   return (
     <div ref={rootRef} style={{ position: 'relative' }}>
       <button
-        onClick={() => setOpen(o => !o)}
+        onClick={() => setOpen(o => {
+          const next = !o;
+          if (next) onOpen?.();
+          return next;
+        })}
         style={{
           display: 'flex',
           alignItems: 'center',

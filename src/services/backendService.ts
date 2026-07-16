@@ -348,16 +348,33 @@ export class BackendService {
 
   // --- Provider management -------------------------------------------------------
 
-  async registerProvider(provider: string, apiKey: string): Promise<void> {
+  async registerProvider(provider: string, apiKey: string, baseUrl?: string): Promise<void> {
     await fetch(`${BASE_URL}/api/providers`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider_id: provider, api_key: apiKey }),
+      body: JSON.stringify({ provider_id: provider, api_key: apiKey, base_url: baseUrl }),
     });
   }
 
   async getAvailableModels(): Promise<{ id: string; display_name: string; is_free: boolean; cost_per_1k_output: number }[]> {
     const res = await fetch(`${BASE_URL}/api/models`);
+    return res.json();
+  }
+
+  async addModel(payload: {
+    provider_id: string;
+    model_id: string;
+    display_name?: string;
+    base_url?: string;
+    is_free?: boolean;
+    context_window?: number;
+  }): Promise<{ id: string; display_name: string; is_free: boolean; context_window: number }> {
+    const res = await fetch(`${BASE_URL}/api/models`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error(`Add-model API error: ${res.status}`);
     return res.json();
   }
 

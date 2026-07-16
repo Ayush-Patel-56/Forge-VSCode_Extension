@@ -38,6 +38,9 @@ class ModelRouter:
         self._model_costs_loaded = False
         self._vision_models: set[str] = set()
         self._vision_models_loaded = False
+        # provider_id -> {'base_url': str, 'env_key': str} for providers not
+        # hardcoded in PROVIDER_CONFIGS (added via forge.add.custom.model).
+        self._dynamic_providers: dict[str, dict] = {}
         self._load_settings()
 
     def _load_settings(self):
@@ -55,6 +58,18 @@ class ModelRouter:
                 rows = db.query(UsageLog).filter(UsageLog.timestamp >= today_midnight).all()
                 self._today_tokens = sum((r.tokens_in or 0) + (r.tokens_out or 0) for r in rows)
                 self._today_cost_usd = sum((r.cost_usd or 0.0) for r in rows)
+
+                # Restore dynamically-registered providers (added via
+                # register_provider with a base_url, e.g. forge.add.custom.model)
+                # so a backend restart doesn't lose them -- any Provider row
+                # whose id isn't one of the hardcoded PROVIDER_CONFIGS is ours.
+                from db.models import Provider
+                for p in db.query(Provider).all():
+                    if p.id not in PROVIDER_CONFIGS:
+                        self._dynamic_providers[p.id] = {
+                            'base_url': p.base_url,
+                            'env_key': f'FORGE_{p.id.upper()}_KEY',
+                        }
         except Exception:
             pass  # DB not initialized yet (first run) - keep defaults; init_db() runs at startup
 
@@ -89,7 +104,13 @@ class ModelRouter:
 
     def _get_client(self, provider: str) -> AsyncOpenAI:
         if provider not in self._clients:
-            cfg = PROVIDER_CONFIGS[provider]
+            cfg = PROVIDER_CONFIGS.get(provider) or self._dynamic_providers.get(provider)
+            if cfg is None:
+                raise KeyError(
+                    f"Unknown provider {provider!r} -- register it first via "
+                    f"register_provider() / POST /api/providers (or the "
+                    f"'Forge: Add custom model' command)."
+                )
             key = os.environ.get(cfg['env_key'] or '', 'ollama') if cfg['env_key'] else 'ollama'
             self._clients[provider] = AsyncOpenAI(api_key=key, base_url=cfg['base_url'])
         return self._clients[provider]
@@ -526,10 +547,69 @@ class ModelRouter:
             return '\n'.join(lines)
         return text
 
-    def register_provider(self, provider_id: str, api_key: str):
-        os.environ[f'FORGE_{provider_id.upper()}_KEY'] = api_key
-        # Reset cached client to use new key
-        self._clients.pop(provider_id, None)
+    def register_provider(self, provider_id: str, api_key: str, base_url: str | None = None):
+        if api_key:
+            os.environ[f'FORGE_{provider_id.upper()}_KEY'] = api_key
+            # Reset cached client to use new key
+            self._clients.pop(provider_id, None)
+
+        if base_url or provider_id not in PROVIDER_CONFIGS:
+            # Dynamic provider (paste-to-configure, or an id we don't know
+            # about yet): keep an in-memory entry AND persist it so a backend
+            # restart picks it back up via _load_settings().
+            resolved_base_url = base_url or (self._dynamic_providers.get(provider_id) or {}).get('base_url')
+            if not resolved_base_url:
+                raise ValueError(f'base_url is required to register unknown provider {provider_id!r}')
+            self._dynamic_providers[provider_id] = {
+                'base_url': resolved_base_url,
+                'env_key': f'FORGE_{provider_id.upper()}_KEY',
+            }
+            try:
+                from db.models import Provider
+                with get_session() as db:
+                    db.merge(Provider(
+                        id=provider_id,
+                        display_name=provider_id.title(),
+                        base_url=resolved_base_url,
+                    ))
+                    db.commit()
+            except Exception:
+                pass  # DB not initialized yet -- in-memory registration still works
+
+    def add_model(
+        self, provider_id: str, model_id: str, display_name: str | None = None,
+        is_free: bool = False, context_window: int = 8192,
+    ) -> dict:
+        """Registers (or updates) a Model catalog row for a provider/model
+        pair. The Model.id is f'{provider_id}/{model_id}' -- stream() splits
+        candidates on the FIRST '/' only (candidate.split('/', 1)), so a
+        model_id that itself contains slashes (e.g. 'z-ai/glm-5.2') round-trips
+        correctly: 'nvidia/z-ai/glm-5.2'.split('/', 1) -> ['nvidia',
+        'z-ai/glm-5.2']."""
+        from db.models import Model
+        full_id = f'{provider_id}/{model_id}'
+        resolved_display_name = display_name or f'{model_id} ({provider_id})'
+
+        with get_session() as db:
+            db.merge(Model(
+                id=full_id,
+                provider_id=provider_id,
+                model_id=model_id,
+                display_name=resolved_display_name,
+                context_window=context_window,
+                is_free=is_free,
+            ))
+            db.commit()
+
+        # Invalidate cost/vision caches so the new model's data (or lack
+        # thereof) is picked up on next lookup instead of a stale miss.
+        self._model_costs_loaded = False
+        self._vision_models_loaded = False
+
+        return {
+            'id': full_id, 'display_name': resolved_display_name,
+            'is_free': is_free, 'context_window': context_window,
+        }
 
     def set_default_model(self, model_id: str):
         self._default_model = model_id

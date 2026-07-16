@@ -70,6 +70,7 @@ export interface ActionsPaletteProps {
   onRequestWorkspaceFiles: (query: string) => void;
   onAttachFile: (relPath: string) => void;
   onMentionFile: (relPath: string) => void;
+  onRequestModels: () => void;
 }
 
 export default function ActionsPalette({
@@ -91,6 +92,7 @@ export default function ActionsPalette({
   onRequestWorkspaceFiles,
   onAttachFile,
   onMentionFile,
+  onRequestModels,
 }: ActionsPaletteProps) {
   const [filter, setFilter] = useState('');
   const [highlighted, setHighlighted] = useState(0);
@@ -285,6 +287,7 @@ export default function ActionsPalette({
             onModelChange(id);
             onClose();
           }}
+          onOpen={onRequestModels}
         />
       </div>
     );

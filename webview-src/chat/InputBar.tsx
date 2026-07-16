@@ -53,6 +53,7 @@ export default function InputBar({
   onRequestUsage,
   workspaceFiles,
   onRequestWorkspaceFiles,
+  onRequestModels,
 }: {
   disabled: boolean;
   thinking: boolean;
@@ -75,6 +76,7 @@ export default function InputBar({
   onRequestUsage: () => void;
   workspaceFiles: string[];
   onRequestWorkspaceFiles: (query: string) => void;
+  onRequestModels: () => void;
 }) {
   const [input, setInput] = useState('');
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -272,6 +274,7 @@ export default function InputBar({
               onRequestWorkspaceFiles={onRequestWorkspaceFiles}
               onAttachFile={relPath => setAttachedFiles(prev => (prev.includes(relPath) ? prev : [...prev, relPath]))}
               onMentionFile={insertMention}
+              onRequestModels={onRequestModels}
             />
           )}
         </div>
@@ -320,7 +323,7 @@ export default function InputBar({
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, fontFamily: MONO_FONT }}>
         <ModePopup mode={mode} onModeChange={onModeChange} effort={effort} onEffortChange={onEffortChange} />
-        <ModelSelect models={models} activeModelId={activeModelId} onSelect={onModelChange} />
+        <ModelSelect models={models} activeModelId={activeModelId} onSelect={onModelChange} onOpen={onRequestModels} />
 
         <button
           onClick={() => fileInputRef.current?.click()}

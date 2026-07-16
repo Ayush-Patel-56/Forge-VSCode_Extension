@@ -11,7 +11,7 @@ from mcp.manager import MCPManager
 from db import init_db, get_session
 from db.models import Settings
 from schemas import (
-    ApprovalRequest, ChatRequest, CompleteRequest, IndexRequest,
+    AddModelRequest, ApprovalRequest, ChatRequest, CompleteRequest, IndexRequest,
     MCPInstallRequest, MCPStartRequest, ProviderRequest, SettingsPatch
 )
 from tools.approvals import request_approval, resolve_approval, run_terminal_with_approval
@@ -248,13 +248,27 @@ async def context_chunks(q: str, k: int = 8):
 
 @app.post('/api/providers')
 async def add_provider(body: ProviderRequest):
-    model_router.register_provider(body.provider_id, body.api_key)
+    model_router.register_provider(body.provider_id, body.api_key, body.base_url)
     return {'status': 'ok'}
 
 
 @app.get('/api/models')
 async def list_models():
     return model_router.list_models()
+
+
+@app.post('/api/models')
+async def add_model(body: AddModelRequest):
+    if body.base_url:
+        # Ensure the provider is registered (without touching its key) so a
+        # model can be added before/without a separate /api/providers call --
+        # register_provider() only writes an env var when api_key is truthy,
+        # and merges/keeps the existing Provider row's base_url otherwise.
+        model_router.register_provider(body.provider_id, os.environ.get(f'FORGE_{body.provider_id.upper()}_KEY', ''), body.base_url)
+    return model_router.add_model(
+        body.provider_id, body.model_id, body.display_name,
+        body.is_free or False, body.context_window or 8192,
+    )
 
 
 @app.post('/api/mcp/install')
