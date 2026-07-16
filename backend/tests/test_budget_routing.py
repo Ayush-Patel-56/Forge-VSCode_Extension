@@ -125,7 +125,10 @@ async def _run_cost_math_test() -> bool:
     collected = []
     async for raw in router.stream(messages=messages, model_id=None, context_chunks=[]):
         payload = json.loads(raw)
-        collected.append(payload['content'])
+        # The stream also yields typed events (status etc.) since the agent
+        # engine work -- only text chunks matter for the cost math here.
+        if 'content' in payload:
+            collected.append(payload['content'])
 
     streamed_text = ''.join(collected)
 
